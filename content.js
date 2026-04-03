@@ -1,4 +1,12 @@
-const API_BASE = 'https://qa-grader-app.onrender.com';
+const API_BASE = (() => {
+  const override = localStorage.getItem('qa-api-base');
+  if (override) return override.replace(/\/+$/, '');
+  const { protocol, origin, hostname } = window.location;
+  if (protocol === 'file:' || !hostname || hostname === 'localhost' || hostname === '127.0.0.1') {
+    return 'http://localhost:3001';
+  }
+  return origin || 'https://qa-grader-app.onrender.com';
+})();
 const FRONT_BASE = `${API_BASE}/api/front`;
 const THEME_KEY = 'qa-theme';
 const ANALYTICS_FILTER_KEY = 'qa-analytics-filters';
