@@ -573,6 +573,18 @@ function botDenom(t){
   return Math.min(d, 110);
 }
 
+function botPercent(t){
+  const stored = metricNumber(t?.bot?.totalPercent);
+  if(stored !== null) return stored;
+  const numerator = metricNumber(t?.bot?.numerator);
+  const denominator = metricNumber(t?.bot?.denominator);
+  if(numerator !== null && denominator !== null && denominator > 0){
+    return Math.round((numerator / denominator) * 100);
+  }
+  const denom = botDenom(t);
+  return denom > 0 ? pct(botRaw(t), denom) : null;
+}
+
 function agentDenom(id){
   const g = grades[id];
   if(!g) return 0;
@@ -605,6 +617,127 @@ function isAF(id){
   const rawU = agentRawUnfiltered(id);
   const denom = agentDenom(id);
   return denom > 0 && pct(rawU, denom) < 50 && rawU > 0;
+}
+
+function generalPercent(ticketId){
+  const g = grades[ticketId];
+  if(!g?.submitted) return null;
+  const stored = metricNumber(g.totalPercent);
+  if(stored !== null) return stored;
+  const numerator = metricNumber(g.numerator);
+  const denominator = metricNumber(g.denominator);
+  if(numerator !== null && denominator !== null && denominator > 0){
+    return Math.round((numerator / denominator) * 100);
+  }
+  return null;
+}
+
+function avgRounded(values){
+  const nums = values.filter(v => typeof v === 'number' && Number.isFinite(v));
+  if(!nums.length) return 0;
+  return Math.round(nums.reduce((sum, v) => sum + v, 0) / nums.length);
+}
+
+function ticketMatchesAnalyticsFilters(t, options = {}){
+  const { ignoreGrader = false } = options;
+  const g = grades[t.id];
+  const agentKey = normalizeAgentIdentity(t.agent);
+  if (!ignoreGrader && AF.grader && (g?.grader || '') !== AF.grader) return false;
+  if (AF.agents.length && !AF.agents.includes(agentKey)) return false;
+  if (AF.excludedAgents.length && AF.excludedAgents.includes(agentKey)) return false;
+  if (!analyticsCategoryMatch(t.id, AF.categories)) return false;
+  if (AF.inboxes.length && !AF.inboxes.includes(t.inbox || '')) return false;
+  if (AF.week && t.week !== AF.week) return false;
+  const ticketMonth = monthKey(t.date || t.createdTime);
+  if (AF.month && ticketMonth !== AF.month) return false;
+  if (AF.dateFrom && t.date && t.date < AF.dateFrom) return false;
+  if (AF.dateTo && t.date && t.date > AF.dateTo) return false;
+  return true;
+}
+
+function summarizeGeneralAnalytics(tickets){
+  const generalScores = [];
+  const gaps = [];
+
+  tickets.forEach(t => {
+    const general = generalPercent(t.id);
+    if(general === null) return;
+    generalScores.push(general);
+    const bot = botPercent(t);
+    if(bot !== null) gaps.push(Math.abs(general - bot));
+  });
+
+  return {
+    count: generalScores.length,
+    avgScore: avgRounded(generalScores),
+    avgGap: avgRounded(gaps)
+  };
+}
+
+function buildAgentRankingRows(tickets, scoreGetter){
+  const buckets = new Map();
+
+  tickets.forEach(t => {
+    const score = scoreGetter(t);
+    if(score === null || !Number.isFinite(score)) return;
+    const key = normalizeAgentIdentity(t.agent);
+    if(!key) return;
+    if(!buckets.has(key)){
+      buckets.set(key, {
+        ag: analyticsAgentLabel(t.agent) || t.agent || 'Unknown',
+        n: 0,
+        total: 0
+      });
+    }
+    const bucket = buckets.get(key);
+    bucket.n += 1;
+    bucket.total += score;
+  });
+
+  const rows = [...buckets.values()]
+    .map(row => ({
+      ag: row.ag,
+      n: row.n,
+      aA: Math.round(row.total / row.n),
+      rank: 0
+    }))
+    .sort((a, b) => b.aA - a.aA || b.n - a.n || a.ag.localeCompare(b.ag));
+
+  let rank = 0;
+  let prevKey = '';
+  rows.forEach((row, index) => {
+    const currentKey = `${row.aA}|${row.n}`;
+    if(currentKey !== prevKey){
+      rank = index + 1;
+      prevKey = currentKey;
+    }
+    row.rank = rank;
+  });
+
+  return rows;
+}
+
+function buildWeeklyRankingRows(tickets, scoreGetter){
+  const weeks = new Map();
+
+  tickets.forEach(t => {
+    const score = scoreGetter(t);
+    if(score === null || !Number.isFinite(score)) return;
+    const week = t.week || weekOf(t.date || t.createdTime) || '—';
+    if(!weeks.has(week)) weeks.set(week, []);
+    weeks.get(week).push(t);
+  });
+
+  return [...weeks.entries()]
+    .sort((a, b) => {
+      const da = parseDate(a[0]);
+      const db = parseDate(b[0]);
+      return (db?.getTime() || 0) - (da?.getTime() || 0);
+    })
+    .flatMap(([week, weekTickets]) => buildAgentRankingRows(weekTickets, scoreGetter).map(row => ({
+      week,
+      ...row
+    })));
 }
 
 function parseImportedValue(v){
@@ -2076,21 +2209,7 @@ function renderMyFilters() {
 }
 
 function applyAnalyticsFilters(tickets) {
-  return tickets.filter(t => {
-    const g = grades[t.id];
-    const agentKey = normalizeAgentIdentity(t.agent);
-    if (AF.grader && (g?.grader || '') !== AF.grader) return false;
-    if (AF.agents.length && !AF.agents.includes(agentKey)) return false;
-    if (AF.excludedAgents.length && AF.excludedAgents.includes(agentKey)) return false;
-    if (!analyticsCategoryMatch(t.id, AF.categories)) return false;
-    if (AF.inboxes.length && !AF.inboxes.includes(t.inbox || '')) return false;
-    if (AF.week && t.week !== AF.week) return false;
-    const ticketMonth = monthKey(t.date || t.createdTime);
-    if (AF.month && ticketMonth !== AF.month) return false;
-    if (AF.dateFrom && t.date && t.date < AF.dateFrom) return false;
-    if (AF.dateTo && t.date && t.date > AF.dateTo) return false;
-    return true;
-  });
+  return tickets.filter(t => ticketMatchesAnalyticsFilters(t));
 }
 
 function renderAnalyticsCheckGroup(label, key, options, selected) {
@@ -2996,6 +3115,7 @@ async function renderAnalytics(){
   const cont = document.getElementById('an-content');
   const allDone = TICKETS.filter(t => grades[t.id]?.submitted);
   const done = applyAnalyticsFilters(allDone);
+  const generalDone = allDone.filter(t => ticketMatchesAnalyticsFilters(t, { ignoreGrader:true }));
 
   if(!allDone.length){
     cont.innerHTML = `<div class="an-empty"><div class="empty-ic">📊</div><p>No graded tickets yet.</p></div>`;
@@ -3032,7 +3152,6 @@ async function renderAnalytics(){
   let weeklyGraderRows = [];
   let weeklyBotRows = [];
   let allTimeSummary = {};
-  let allTimeGeneralRows = [];
   let allTimeGraderRows = [];
   let allTimeBotRows = [];
 
@@ -3050,7 +3169,6 @@ async function renderAnalytics(){
       weeklyGraderRows = mapRankRows(data.weekly_grader_ranks);
       weeklyBotRows = mapRankRows(data.weekly_bot_ranks);
       allTimeSummary = data.all_time_summary || {};
-      allTimeGeneralRows = mapRankRows(data.all_time_general_agents);
       allTimeGraderRows = mapRankRows(data.all_time_grader_agents);
       allTimeBotRows = mapRankRows(data.all_time_bot_agents);
     }
@@ -3058,24 +3176,29 @@ async function renderAnalytics(){
     console.error('Analytics ranking load failed:', e);
   }
 
+  const filteredGeneralSummary = summarizeGeneralAnalytics(generalDone);
+  const allTimeGeneralSummary = summarizeGeneralAnalytics(allDone);
+  filteredGeneralRows = buildAgentRankingRows(generalDone, t => generalPercent(t.id));
+  weeklyGeneralRows = buildWeeklyRankingRows(generalDone, t => generalPercent(t.id));
+
   const filteredTicketCount = Number(filteredSummary.total_tickets) || 0;
   const filteredGraderCount = Number(filteredSummary.grader_ticket_count) || 0;
-  const filteredGeneralCount = Number(filteredSummary.general_ticket_count) || filteredTicketCount;
-  const avgGeneralScore = Number(filteredSummary.avg_general_score) || 0;
+  const filteredGeneralCount = filteredGeneralSummary.count;
+  const avgGeneralScore = filteredGeneralSummary.avgScore;
   const avgGraderScore = Number(filteredSummary.avg_grader_score) || 0;
   const avgBotScore = Number(filteredSummary.avg_bot_score) || 0;
-  const avgDiff = Number(filteredSummary.avg_diff) || 0;
+  const avgDiff = filteredGeneralSummary.avgGap;
   const allTimeTicketCount = Number(allTimeSummary.total_tickets) || 0;
   const allTimeGraderCount = Number(allTimeSummary.grader_ticket_count) || 0;
-  const allTimeGeneralCount = Number(allTimeSummary.general_ticket_count) || allTimeTicketCount;
-  const allTimeAvgGeneralScore = Number(allTimeSummary.avg_general_score) || 0;
+  const allTimeGeneralCount = allTimeGeneralSummary.count || allTimeTicketCount;
+  const allTimeAvgGeneralScore = allTimeGeneralSummary.avgScore;
   const allTimeAvgGraderScore = Number(allTimeSummary.avg_grader_score) || 0;
   const allTimeAvgBotScore = Number(allTimeSummary.avg_bot_score) || 0;
-  const allTimeAvgDiff = Number(allTimeSummary.avg_diff) || 0;
+  const allTimeAvgDiff = allTimeGeneralSummary.avgGap;
 
   cont.innerHTML = `${renderAnalyticsFilters(allDone)}
   ${analyticsActiveChips()}
-  ${!done.length ? `<div class="an-empty"><div class="empty-ic">📊</div><p>No analytics match the current filters.</p></div>` : `<div class="kpi-section-label">Filtered</div>
+  ${!(done.length || generalDone.length) ? `<div class="an-empty"><div class="empty-ic">📊</div><p>No analytics match the current filters.</p></div>` : `<div class="kpi-section-label">Filtered</div>
   <div class="kpis">
     <div class="kpi"><div class="kv" style="color:#0ea5a4">${avgGeneralScore}%</div><div class="kl">Avg general score</div><div class="ks">Andi's score, ${filteredGeneralCount} filtered tickets</div></div>
     <div class="kpi"><div class="kv" style="color:#1ec97a">${filteredTicketCount}</div><div class="kl">Filtered tickets</div><div class="ks">${filteredGraderCount} graded by grader</div></div>
@@ -3121,7 +3244,7 @@ async function renderAnalytics(){
     renderAnalytics();
   });
 
-  if(!done.length) return;
+  if(!done.length && !generalDone.length) return;
 
   Chart.defaults.color = '#6b7189';
   Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
