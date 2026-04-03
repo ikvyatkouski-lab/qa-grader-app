@@ -274,7 +274,16 @@ let grades = {};
 let filter = 'all';
 let editing = false;
 let selectedIds = new Set();
-let F = { category:'', inbox:'', agent:'', week:'', convId:'', dateFrom:'', dateTo:'', grader:'', scoreFrom:'', scoreTo:'', autofail:'' };
+function defaultTicketFilters(){
+  return { category:'', inbox:'', agent:'', week:'', convId:'', dateFrom:'', dateTo:'', grader:'', scoreFrom:'', scoreTo:'', autofail:'' };
+}
+
+function defaultSubmissionFilters(){
+  return { categories:[], inboxes:[], agents:[], weeks:[], convId:'', dateFrom:'', dateTo:'', grader:'', scoreFrom:'', scoreTo:'', autofail:'' };
+}
+
+let F = defaultTicketFilters();
+let SF = defaultSubmissionFilters();
 let qfOpen = false;
 let charts = {};
 let toastTimer = null;
@@ -573,6 +582,18 @@ function botDenom(t){
   return Math.min(d, 110);
 }
 
+function botPercent(t){
+  const stored = metricNumber(t?.bot?.totalPercent);
+  if(stored !== null) return stored;
+  const numerator = metricNumber(t?.bot?.numerator);
+  const denominator = metricNumber(t?.bot?.denominator);
+  if(numerator !== null && denominator !== null && denominator > 0){
+    return Math.round((numerator / denominator) * 100);
+  }
+  const denom = botDenom(t);
+  return denom > 0 ? pct(botRaw(t), denom) : null;
+}
+
 function agentDenom(id){
   const g = grades[id];
   if(!g) return 0;
@@ -605,6 +626,127 @@ function isAF(id){
   const rawU = agentRawUnfiltered(id);
   const denom = agentDenom(id);
   return denom > 0 && pct(rawU, denom) < 50 && rawU > 0;
+}
+
+function generalPercent(ticketId){
+  const g = grades[ticketId];
+  if(!g?.submitted) return null;
+  const stored = metricNumber(g.totalPercent);
+  if(stored !== null) return stored;
+  const numerator = metricNumber(g.numerator);
+  const denominator = metricNumber(g.denominator);
+  if(numerator !== null && denominator !== null && denominator > 0){
+    return Math.round((numerator / denominator) * 100);
+  }
+  return null;
+}
+
+function avgRounded(values){
+  const nums = values.filter(v => typeof v === 'number' && Number.isFinite(v));
+  if(!nums.length) return 0;
+  return Math.round(nums.reduce((sum, v) => sum + v, 0) / nums.length);
+}
+
+function ticketMatchesAnalyticsFilters(t, options = {}){
+  const { ignoreGrader = false } = options;
+  const g = grades[t.id];
+  const agentKey = normalizeAgentIdentity(t.agent);
+  if (!ignoreGrader && AF.grader && (g?.grader || '') !== AF.grader) return false;
+  if (AF.agents.length && !AF.agents.includes(agentKey)) return false;
+  if (AF.excludedAgents.length && AF.excludedAgents.includes(agentKey)) return false;
+  if (!analyticsCategoryMatch(t.id, AF.categories)) return false;
+  if (AF.inboxes.length && !AF.inboxes.includes(t.inbox || '')) return false;
+  if (AF.week && t.week !== AF.week) return false;
+  const ticketMonth = monthKey(t.date || t.createdTime);
+  if (AF.month && ticketMonth !== AF.month) return false;
+  if (AF.dateFrom && t.date && t.date < AF.dateFrom) return false;
+  if (AF.dateTo && t.date && t.date > AF.dateTo) return false;
+  return true;
+}
+
+function summarizeGeneralAnalytics(tickets){
+  const generalScores = [];
+  const gaps = [];
+
+  tickets.forEach(t => {
+    const general = generalPercent(t.id);
+    if(general === null) return;
+    generalScores.push(general);
+    const bot = botPercent(t);
+    if(bot !== null) gaps.push(Math.abs(general - bot));
+  });
+
+  return {
+    count: generalScores.length,
+    avgScore: avgRounded(generalScores),
+    avgGap: avgRounded(gaps)
+  };
+}
+
+function buildAgentRankingRows(tickets, scoreGetter){
+  const buckets = new Map();
+
+  tickets.forEach(t => {
+    const score = scoreGetter(t);
+    if(score === null || !Number.isFinite(score)) return;
+    const key = normalizeAgentIdentity(t.agent);
+    if(!key) return;
+    if(!buckets.has(key)){
+      buckets.set(key, {
+        ag: analyticsAgentLabel(t.agent) || t.agent || 'Unknown',
+        n: 0,
+        total: 0
+      });
+    }
+    const bucket = buckets.get(key);
+    bucket.n += 1;
+    bucket.total += score;
+  });
+
+  const rows = [...buckets.values()]
+    .map(row => ({
+      ag: row.ag,
+      n: row.n,
+      aA: Math.round(row.total / row.n),
+      rank: 0
+    }))
+    .sort((a, b) => b.aA - a.aA || b.n - a.n || a.ag.localeCompare(b.ag));
+
+  let rank = 0;
+  let prevKey = '';
+  rows.forEach((row, index) => {
+    const currentKey = `${row.aA}|${row.n}`;
+    if(currentKey !== prevKey){
+      rank = index + 1;
+      prevKey = currentKey;
+    }
+    row.rank = rank;
+  });
+
+  return rows;
+}
+
+function buildWeeklyRankingRows(tickets, scoreGetter){
+  const weeks = new Map();
+
+  tickets.forEach(t => {
+    const score = scoreGetter(t);
+    if(score === null || !Number.isFinite(score)) return;
+    const week = t.week || weekOf(t.date || t.createdTime) || '—';
+    if(!weeks.has(week)) weeks.set(week, []);
+    weeks.get(week).push(t);
+  });
+
+  return [...weeks.entries()]
+    .sort((a, b) => {
+      const da = parseDate(a[0]);
+      const db = parseDate(b[0]);
+      return (db?.getTime() || 0) - (da?.getTime() || 0);
+    })
+    .flatMap(([week, weekTickets]) => buildAgentRankingRows(weekTickets, scoreGetter).map(row => ({
+      week,
+      ...row
+    })));
 }
 
 function parseImportedValue(v){
@@ -1740,7 +1882,7 @@ function uniq(arr) { return [...new Set(arr.filter(Boolean))].sort(); }
 function ticketScore(t) {
   const g = grades[t.id];
   if (!g || !g.submitted) return null;
-  return typeof g.totalPct === 'number' ? g.totalPct : null;
+  return typeof g.totalPercent === 'number' ? g.totalPercent : null;
 }
 
 // ── Apply active filters to a ticket list ─────────────────────────────────
@@ -1760,6 +1902,26 @@ function applyFilters(tickets) {
     const sc = ticketScore(t);
     if (F.scoreFrom !== '' && sc !== null && sc < Number(F.scoreFrom)) return false;
     if (F.scoreTo   !== '' && sc !== null && sc > Number(F.scoreTo))   return false;
+    return true;
+  });
+}
+
+function applySubmissionFilters(tickets) {
+  return tickets.filter(t => {
+    const g = grades[t.id];
+    if (SF.categories.length && !SF.categories.includes(g?.category || '')) return false;
+    if (SF.inboxes.length && !SF.inboxes.includes(t.inbox || '')) return false;
+    if (SF.agents.length && !SF.agents.includes(t.agent || '')) return false;
+    if (SF.weeks.length && !SF.weeks.includes(t.week || '')) return false;
+    if (SF.convId && !convIdFromFrontUrl(t.frontUrl).toLowerCase().includes(String(SF.convId).trim().toLowerCase())) return false;
+    if (SF.grader && (g?.grader || '') !== SF.grader) return false;
+    if (SF.dateFrom && t.date && t.date < SF.dateFrom) return false;
+    if (SF.dateTo && t.date && t.date > SF.dateTo) return false;
+    if (SF.autofail === 'yes' && !g?.af?.autofail) return false;
+    if (SF.autofail === 'no' && g?.af?.autofail) return false;
+    const sc = ticketScore(t);
+    if (SF.scoreFrom !== '' && sc !== null && sc < Number(SF.scoreFrom)) return false;
+    if (SF.scoreTo !== '' && sc !== null && sc > Number(SF.scoreTo)) return false;
     return true;
   });
 }
@@ -1984,48 +2146,62 @@ function renderSubsFilters() {
   const agents  = canSeeAgent ? uniq(submitted.map(t => t.agent)) : [];
   const cats    = uniq(submitted.map(t => grades[t.id]?.category).filter(Boolean));
   const graders = uniq(submitted.map(t => grades[t.id]?.grader).filter(Boolean));
-
-  const opt = (key, arr) => arr.map(o => `<option value="${o}" ${F[key]===o?'selected':''}>${o}</option>`).join('');
+  const checkGroup = (label, key, options, selectedValues) => {
+    if (!options.length) return '';
+    return `<div class="hfbar-grp hfbar-grp-check">
+      <span class="hfbar-lbl">${escapeHtml(label)}</span>
+      <div class="hfcheck" data-sf-checkgroup="${escapeHtml(key)}">
+        ${options.map(option => `<label class="hfcheck-item">
+          <input type="checkbox" value="${escapeHtml(option)}" ${selectedValues.includes(option) ? 'checked' : ''}>
+          <span>${escapeHtml(option)}</span>
+        </label>`).join('')}
+      </div>
+    </div>`;
+  };
 
   cont.innerHTML = `<div class="hfbar">
-    ${cats.length ? `<div class="hfbar-grp"><span class="hfbar-lbl">Category</span>
-      <select data-f="category"><option value="">All</option>${opt('category',cats)}</select></div>` : ''}
-    <div class="hfbar-grp"><span class="hfbar-lbl">Inbox</span>
-      <select data-f="inbox"><option value="">All</option>${opt('inbox',inboxes)}</select></div>
-    ${canSeeAgent ? `<div class="hfbar-grp"><span class="hfbar-lbl">Agent</span>
-      <select data-f="agent"><option value="">All</option>${opt('agent',agents)}</select></div>` : ''}
-    ${weeks.length ? `<div class="hfbar-grp"><span class="hfbar-lbl">Week</span>
-      <select data-f="week"><option value="">All</option>${opt('week',weeks)}</select></div>` : ''}
+    ${checkGroup('Category', 'categories', cats, SF.categories)}
+    ${checkGroup('Inbox', 'inboxes', inboxes, SF.inboxes)}
+    ${canSeeAgent ? checkGroup('Agent', 'agents', agents, SF.agents) : ''}
+    ${checkGroup('Week', 'weeks', weeks, SF.weeks)}
     <div class="hfbar-grp"><span class="hfbar-lbl">cnv_it</span>
-      <input type="text" data-f="convId" value="${escapeHtml(F.convId)}" placeholder="Search cnv_it"></div>
+      <input type="text" data-sf="convId" value="${escapeHtml(SF.convId)}" placeholder="Search cnv_it"></div>
     <div class="hfbar-grp"><span class="hfbar-lbl">From</span>
-      <input type="date" data-f="dateFrom" value="${F.dateFrom}"></div>
+      <input type="date" data-sf="dateFrom" value="${SF.dateFrom}"></div>
     <div class="hfbar-grp"><span class="hfbar-lbl">To</span>
-      <input type="date" data-f="dateTo"   value="${F.dateTo}"></div>
+      <input type="date" data-sf="dateTo"   value="${SF.dateTo}"></div>
     ${graders.length ? `<div class="hfbar-grp"><span class="hfbar-lbl">Grader</span>
-      <select data-f="grader"><option value="">All</option>${opt('grader',graders)}</select></div>` : ''}
+      <select data-sf="grader"><option value="">All</option>${graders.map(o => `<option value="${o}" ${SF.grader===o?'selected':''}>${o}</option>`).join('')}</select></div>` : ''}
     <div class="hfbar-grp"><span class="hfbar-lbl">Score from</span>
-      <input type="number" data-f="scoreFrom" value="${F.scoreFrom}" placeholder="0"   min="0" max="100" style="width:60px"></div>
+      <input type="number" data-sf="scoreFrom" value="${SF.scoreFrom}" placeholder="0"   min="0" max="100" style="width:60px"></div>
     <div class="hfbar-grp"><span class="hfbar-lbl">Score to</span>
-      <input type="number" data-f="scoreTo"   value="${F.scoreTo}"   placeholder="100" min="0" max="100" style="width:60px"></div>
+      <input type="number" data-sf="scoreTo"   value="${SF.scoreTo}"   placeholder="100" min="0" max="100" style="width:60px"></div>
     <div class="hfbar-grp"><span class="hfbar-lbl">Auto-fail</span>
-      <select data-f="autofail"><option value="">All</option><option value="yes" ${F.autofail==='yes'?'selected':''}>Yes</option><option value="no" ${F.autofail==='no'?'selected':''}>No</option></select></div>
+      <select data-sf="autofail"><option value="">All</option><option value="yes" ${SF.autofail==='yes'?'selected':''}>Yes</option><option value="no" ${SF.autofail==='no'?'selected':''}>No</option></select></div>
     <button class="hfbar-clear" id="hfbar-clear">Clear</button>
   </div>`;
 
-  cont.querySelectorAll('[data-f]').forEach(el => {
+  cont.querySelectorAll('[data-sf]').forEach(el => {
     const syncFilter = () => {
-      F[el.dataset.f] = el.value;
-      resetPager('grading');
+      SF[el.dataset.sf] = el.value;
       resetPager('submissions');
       renderSubs();
     };
     el.addEventListener('change', syncFilter);
     if (el.tagName === 'INPUT' && el.type === 'text') el.addEventListener('input', syncFilter);
   });
+  cont.querySelectorAll('[data-sf-checkgroup]').forEach(group => {
+    const syncChecks = () => {
+      SF[group.dataset.sfCheckgroup] = sanitizeStringArray(
+        [...group.querySelectorAll('input:checked')].map(input => input.value)
+      );
+      resetPager('submissions');
+      renderSubs();
+    };
+    group.querySelectorAll('input').forEach(input => input.addEventListener('change', syncChecks));
+  });
   cont.querySelector('#hfbar-clear')?.addEventListener('click', () => {
-    F = { category:'', inbox:'', agent:'', week:'', convId:'', dateFrom:'', dateTo:'', grader:'', scoreFrom:'', scoreTo:'', autofail:'' };
-    resetPager('grading');
+    SF = defaultSubmissionFilters();
     resetPager('submissions');
     renderSubsFilters();
     renderSubs();
@@ -2076,21 +2252,7 @@ function renderMyFilters() {
 }
 
 function applyAnalyticsFilters(tickets) {
-  return tickets.filter(t => {
-    const g = grades[t.id];
-    const agentKey = normalizeAgentIdentity(t.agent);
-    if (AF.grader && (g?.grader || '') !== AF.grader) return false;
-    if (AF.agents.length && !AF.agents.includes(agentKey)) return false;
-    if (AF.excludedAgents.length && AF.excludedAgents.includes(agentKey)) return false;
-    if (!analyticsCategoryMatch(t.id, AF.categories)) return false;
-    if (AF.inboxes.length && !AF.inboxes.includes(t.inbox || '')) return false;
-    if (AF.week && t.week !== AF.week) return false;
-    const ticketMonth = monthKey(t.date || t.createdTime);
-    if (AF.month && ticketMonth !== AF.month) return false;
-    if (AF.dateFrom && t.date && t.date < AF.dateFrom) return false;
-    if (AF.dateTo && t.date && t.date > AF.dateTo) return false;
-    return true;
-  });
+  return tickets.filter(t => ticketMatchesAnalyticsFilters(t));
 }
 
 function renderAnalyticsCheckGroup(label, key, options, selected) {
@@ -2899,7 +3061,7 @@ window.openTicketDetail = async function(ticketId) {
 
 function renderSubs(){
   const allDone = TICKETS.filter(t => grades[t.id]?.submitted);
-  const done = applyFilters(allDone);
+  const done = applySubmissionFilters(allDone);
   const pageData = paginateItems(done, 'submissions');
   document.getElementById('sub-count').textContent = done.length ? `${done.length} submitted grade${done.length !== 1 ? 's' : ''}` : 'No graded tickets yet';
 
@@ -2996,6 +3158,7 @@ async function renderAnalytics(){
   const cont = document.getElementById('an-content');
   const allDone = TICKETS.filter(t => grades[t.id]?.submitted);
   const done = applyAnalyticsFilters(allDone);
+  const generalDone = allDone.filter(t => ticketMatchesAnalyticsFilters(t, { ignoreGrader:true }));
 
   if(!allDone.length){
     cont.innerHTML = `<div class="an-empty"><div class="empty-ic">📊</div><p>No graded tickets yet.</p></div>`;
@@ -3032,7 +3195,6 @@ async function renderAnalytics(){
   let weeklyGraderRows = [];
   let weeklyBotRows = [];
   let allTimeSummary = {};
-  let allTimeGeneralRows = [];
   let allTimeGraderRows = [];
   let allTimeBotRows = [];
 
@@ -3050,7 +3212,6 @@ async function renderAnalytics(){
       weeklyGraderRows = mapRankRows(data.weekly_grader_ranks);
       weeklyBotRows = mapRankRows(data.weekly_bot_ranks);
       allTimeSummary = data.all_time_summary || {};
-      allTimeGeneralRows = mapRankRows(data.all_time_general_agents);
       allTimeGraderRows = mapRankRows(data.all_time_grader_agents);
       allTimeBotRows = mapRankRows(data.all_time_bot_agents);
     }
@@ -3058,24 +3219,29 @@ async function renderAnalytics(){
     console.error('Analytics ranking load failed:', e);
   }
 
+  const filteredGeneralSummary = summarizeGeneralAnalytics(generalDone);
+  const allTimeGeneralSummary = summarizeGeneralAnalytics(allDone);
+  filteredGeneralRows = buildAgentRankingRows(generalDone, t => generalPercent(t.id));
+  weeklyGeneralRows = buildWeeklyRankingRows(generalDone, t => generalPercent(t.id));
+
   const filteredTicketCount = Number(filteredSummary.total_tickets) || 0;
   const filteredGraderCount = Number(filteredSummary.grader_ticket_count) || 0;
-  const filteredGeneralCount = Number(filteredSummary.general_ticket_count) || filteredTicketCount;
-  const avgGeneralScore = Number(filteredSummary.avg_general_score) || 0;
+  const filteredGeneralCount = filteredGeneralSummary.count;
+  const avgGeneralScore = filteredGeneralSummary.avgScore;
   const avgGraderScore = Number(filteredSummary.avg_grader_score) || 0;
   const avgBotScore = Number(filteredSummary.avg_bot_score) || 0;
-  const avgDiff = Number(filteredSummary.avg_diff) || 0;
+  const avgDiff = filteredGeneralSummary.avgGap;
   const allTimeTicketCount = Number(allTimeSummary.total_tickets) || 0;
   const allTimeGraderCount = Number(allTimeSummary.grader_ticket_count) || 0;
-  const allTimeGeneralCount = Number(allTimeSummary.general_ticket_count) || allTimeTicketCount;
-  const allTimeAvgGeneralScore = Number(allTimeSummary.avg_general_score) || 0;
+  const allTimeGeneralCount = allTimeGeneralSummary.count || allTimeTicketCount;
+  const allTimeAvgGeneralScore = allTimeGeneralSummary.avgScore;
   const allTimeAvgGraderScore = Number(allTimeSummary.avg_grader_score) || 0;
   const allTimeAvgBotScore = Number(allTimeSummary.avg_bot_score) || 0;
-  const allTimeAvgDiff = Number(allTimeSummary.avg_diff) || 0;
+  const allTimeAvgDiff = allTimeGeneralSummary.avgGap;
 
   cont.innerHTML = `${renderAnalyticsFilters(allDone)}
   ${analyticsActiveChips()}
-  ${!done.length ? `<div class="an-empty"><div class="empty-ic">📊</div><p>No analytics match the current filters.</p></div>` : `<div class="kpi-section-label">Filtered</div>
+  ${!(done.length || generalDone.length) ? `<div class="an-empty"><div class="empty-ic">📊</div><p>No analytics match the current filters.</p></div>` : `<div class="kpi-section-label">Filtered</div>
   <div class="kpis">
     <div class="kpi"><div class="kv" style="color:#0ea5a4">${avgGeneralScore}%</div><div class="kl">Avg general score</div><div class="ks">Andi's score, ${filteredGeneralCount} filtered tickets</div></div>
     <div class="kpi"><div class="kv" style="color:#1ec97a">${filteredTicketCount}</div><div class="kl">Filtered tickets</div><div class="ks">${filteredGraderCount} graded by grader</div></div>
@@ -3121,7 +3287,7 @@ async function renderAnalytics(){
     renderAnalytics();
   });
 
-  if(!done.length) return;
+  if(!done.length && !generalDone.length) return;
 
   Chart.defaults.color = '#6b7189';
   Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
@@ -3292,45 +3458,25 @@ function analyticsReportStyles() {
   `;
 }
 
-async function buildAnalyticsReportHtml() {
-  await renderAnalytics();
-
-  const kpis = document.querySelector('#an-content .kpis')?.innerHTML || '';
-  const activeChips = analyticsActiveChips();
-  const critChart = document.getElementById('ch-crit')?.toDataURL('image/png') || '';
-  const distChart = document.getElementById('ch-dist')?.toDataURL('image/png') || '';
-  const sections = [
-    { title: 'Weekly Ranking By General Score', id: 'atbl-general' },
-    { title: 'Weekly Ranking By Grader', id: 'atbl-grader' },
-    { title: 'Weekly Ranking By Bot', id: 'atbl-bot' }
-  ];
-
-  return `<!DOCTYPE html>
-  <html>
-  <head>
-    <meta charset="UTF-8">
-    <title>QA Grader Analytics Report</title>
-    ${analyticsReportStyles()}
-  </head>
-  <body>
-    <h1>QA Grader Analytics Report</h1>
-    <div class="meta">Generated on ${new Date().toLocaleString()}</div>
-    ${activeChips ? `<div class="chips">${activeChips.replace(/class="analytics-chip"/g, 'class="chip"').replace(/analytics-active/g, '')}</div>` : ''}
-    ${kpis ? `<div class="kpis">${kpis}</div>` : ''}
-    <div class="chart-grid">
-      ${critChart ? `<div class="chart-card"><h2>Criteria Avg — Grader vs Bot</h2><img src="${critChart}" alt="Criteria chart"></div>` : ''}
-      ${distChart ? `<div class="chart-card"><h2>Grader Score Distribution</h2><img src="${distChart}" alt="Distribution chart"></div>` : ''}
-    </div>
-    ${sections.map(section => {
-      const table = document.getElementById(section.id);
-      return table ? `<div class="table-card"><h2>${section.title}</h2>${table.outerHTML}</div>` : '';
-    }).join('')}
-  </body>
-  </html>`;
+function exportTableStyles() {
+  return `
+    <style>
+      body{font-family:Arial,sans-serif;background:#fff;color:#172033;margin:24px}
+      h1{font-size:24px;margin:0 0 8px}
+      .meta{font-size:12px;color:#667085;margin-bottom:16px}
+      .chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 18px}
+      .chip{display:inline-flex;gap:6px;padding:6px 10px;border:1px solid #d8dfeb;border-radius:999px;font-size:12px}
+      .chip strong{color:#667085}
+      .table-card{padding:14px;border:1px solid #d8dfeb;border-radius:12px;overflow:auto}
+      table{border-collapse:collapse;width:max-content;min-width:100%;font-size:12px}
+      th,td{border:1px solid #d8dfeb;padding:7px 10px;text-align:left;vertical-align:top}
+      th{background:#f3f6fb;font-size:11px;text-transform:uppercase;color:#667085}
+    </style>
+  `;
 }
 
-function exportCsv() {
-  const cols = [
+function submissionsExportColumns() {
+  return [
     'Week',
     'Ticket date',
     'Agent',
@@ -3386,82 +3532,190 @@ function exportCsv() {
     'Post Bug Escalation Cause',
     'QA Feedback'
   ];
+}
 
+function submissionExportRow(t) {
+  const g = grades[t.id];
+  const ag = g && g.submitted;
+  const bNum = botRaw(t);
+  const bDen = botDenom(t);
+  const bScore = pct(bNum, bDen);
+  const aNum = ag ? agentRaw(t.id) : '';
+  const aDen = ag ? agentDenom(t.id) : '';
+  const aScore = ag ? pct(aNum, aDen) : '';
+  const diff = ag ? bScore - aScore : '';
+
+  return [
+    t.week || weekOf(t.date || t.createdTime),
+    fmtDate(t.date || t.createdTime),
+    t.agent || '',
+    t.createdTime || '',
+    t.inbox || '',
+    t.frontUrl || '',
+    bDen,
+    bNum,
+    bScore,
+    aDen,
+    aNum,
+    aScore,
+    diff,
+    ag ? (g.grader || user?.name || 'Bot') : '',
+    ag ? (isNA(g.scores.grammar) ? 'NA' : nv(g.scores.grammar)) : 'NA',
+    ag ? finalCause(g, 'grammar') : 'NA',
+    ag ? (isNA(g.scores.tone) ? 'NA' : nv(g.scores.tone)) : 'NA',
+    ag ? finalCause(g, 'tone') : 'NA',
+    ag ? (isNA(g.scores.timeliness) ? 'NA' : nv(g.scores.timeliness)) : 'NA',
+    ag ? finalCause(g, 'timeliness') : 'NA',
+    'NA',
+    'NA',
+    ag ? (isNA(g.scores.efficiency) ? 'NA' : nv(g.scores.efficiency)) : 'NA',
+    ag ? finalCause(g, 'efficiency') : 'NA',
+    'NA',
+    'NA',
+    ag ? (isNA(g.scores.probing) ? 'NA' : nv(g.scores.probing)) : 'NA',
+    ag ? finalCause(g, 'probing') : 'NA',
+    'NA',
+    'NA',
+    ag ? (isNA(g.scores.problem) ? 'NA' : nv(g.scores.problem)) : 'NA',
+    ag ? finalCause(g, 'problem') : 'NA',
+    'NA',
+    'NA',
+    ag ? (isNA(g.scores.education) ? 'NA' : nv(g.scores.education)) : 'NA',
+    ag ? finalCause(g, 'education') : 'NA',
+    'NA',
+    'NA',
+    ag ? (isNA(g.scores.resolution) ? 'NA' : nv(g.scores.resolution)) : 'NA',
+    ag ? finalCause(g, 'resolution') : 'NA',
+    'NA',
+    'NA',
+    ag ? (isNA(g.scores.docs) ? 'NA' : nv(g.scores.docs)) : 'NA',
+    ag ? finalCause(g, 'docs') : 'NA',
+    ag ? (isNA(g.scores.chatbot) ? 'NA' : nv(g.scores.chatbot)) : 'NA',
+    ag ? finalCause(g, 'chatbot') : 'NA',
+    ag ? (g.af.autofail ? 'TRUE' : 'FALSE') : '',
+    '',
+    ag ? finalAFCause(g, 'autofail') : 'NA',
+    ag ? g.af.bug_esc : '',
+    ag ? finalAFCause(g, 'bug_esc') : '',
+    ag ? g.af.post_bug : '',
+    ag ? finalAFCause(g, 'post_bug') : '',
+    ag ? g.qaFeedback : ''
+  ];
+}
+
+function filteredSubmissionTickets() {
+  return applySubmissionFilters(TICKETS.filter(t => grades[t.id]?.submitted));
+}
+
+function submissionsActiveChips() {
+  const chips = [];
+  SF.categories.forEach(value => chips.push({ label: 'Category', value }));
+  SF.inboxes.forEach(value => chips.push({ label: 'Inbox', value }));
+  SF.agents.forEach(value => chips.push({ label: 'Agent', value }));
+  SF.weeks.forEach(value => chips.push({ label: 'Week', value }));
+  if (SF.convId) chips.push({ label: 'cnv_it', value: SF.convId });
+  if (SF.dateFrom) chips.push({ label: 'From', value: SF.dateFrom });
+  if (SF.dateTo) chips.push({ label: 'To', value: SF.dateTo });
+  if (SF.grader) chips.push({ label: 'Grader', value: SF.grader });
+  if (SF.scoreFrom) chips.push({ label: 'Score from', value: SF.scoreFrom });
+  if (SF.scoreTo) chips.push({ label: 'Score to', value: SF.scoreTo });
+  if (SF.autofail) chips.push({ label: 'Auto-fail', value: SF.autofail });
+  return chips;
+}
+
+async function buildAnalyticsReportHtml() {
+  await renderAnalytics();
+
+  const kpis = document.querySelector('#an-content .kpis')?.innerHTML || '';
+  const activeChips = analyticsActiveChips();
+  const critChart = document.getElementById('ch-crit')?.toDataURL('image/png') || '';
+  const distChart = document.getElementById('ch-dist')?.toDataURL('image/png') || '';
+  const sections = [
+    { title: 'Weekly Ranking By General Score', id: 'atbl-general' },
+    { title: 'Weekly Ranking By Grader', id: 'atbl-grader' },
+    { title: 'Weekly Ranking By Bot', id: 'atbl-bot' }
+  ];
+
+  return `<!DOCTYPE html>
+  <html>
+  <head>
+    <meta charset="UTF-8">
+    <title>QA Grader Analytics Report</title>
+    ${analyticsReportStyles()}
+  </head>
+  <body>
+    <h1>QA Grader Analytics Report</h1>
+    <div class="meta">Generated on ${new Date().toLocaleString()}</div>
+    ${activeChips ? `<div class="chips">${activeChips.replace(/class="analytics-chip"/g, 'class="chip"').replace(/analytics-active/g, '')}</div>` : ''}
+    ${kpis ? `<div class="kpis">${kpis}</div>` : ''}
+    <div class="chart-grid">
+      ${critChart ? `<div class="chart-card"><h2>Criteria Avg — Grader vs Bot</h2><img src="${critChart}" alt="Criteria chart"></div>` : ''}
+      ${distChart ? `<div class="chart-card"><h2>Grader Score Distribution</h2><img src="${distChart}" alt="Distribution chart"></div>` : ''}
+    </div>
+    ${sections.map(section => {
+      const table = document.getElementById(section.id);
+      return table ? `<div class="table-card"><h2>${section.title}</h2>${table.outerHTML}</div>` : '';
+    }).join('')}
+  </body>
+  </html>`;
+}
+
+function exportCsv() {
+  const cols = submissionsExportColumns();
   const rows = [cols];
 
   TICKETS.forEach(t => {
-    const g = grades[t.id];
-    const ag = g && g.submitted;
-    const bNum = botRaw(t);
-    const bDen = botDenom(t);
-    const bScore = pct(bNum, bDen);
-    const aNum = ag ? agentRaw(t.id) : '';
-    const aDen = ag ? agentDenom(t.id) : '';
-    const aScore = ag ? pct(aNum, aDen) : '';
-    const diff = ag ? bScore - aScore : '';
-
-    rows.push([
-      t.week || weekOf(t.date || t.createdTime),
-      fmtDate(t.date || t.createdTime),
-      t.agent || '',
-      t.createdTime || '',
-      t.inbox || '',
-      t.frontUrl || '',
-      bDen,
-      bNum,
-      bScore,
-      aDen,
-      aNum,
-      aScore,
-      diff,
-      ag ? (g.grader || user?.name || 'Bot') : '',
-      ag ? (isNA(g.scores.grammar) ? 'NA' : nv(g.scores.grammar)) : 'NA',
-      ag ? finalCause(g, 'grammar') : 'NA',
-      ag ? (isNA(g.scores.tone) ? 'NA' : nv(g.scores.tone)) : 'NA',
-      ag ? finalCause(g, 'tone') : 'NA',
-      ag ? (isNA(g.scores.timeliness) ? 'NA' : nv(g.scores.timeliness)) : 'NA',
-      ag ? finalCause(g, 'timeliness') : 'NA',
-      'NA',
-      'NA',
-      ag ? (isNA(g.scores.efficiency) ? 'NA' : nv(g.scores.efficiency)) : 'NA',
-      ag ? finalCause(g, 'efficiency') : 'NA',
-      'NA',
-      'NA',
-      ag ? (isNA(g.scores.probing) ? 'NA' : nv(g.scores.probing)) : 'NA',
-      ag ? finalCause(g, 'probing') : 'NA',
-      'NA',
-      'NA',
-      ag ? (isNA(g.scores.problem) ? 'NA' : nv(g.scores.problem)) : 'NA',
-      ag ? finalCause(g, 'problem') : 'NA',
-      'NA',
-      'NA',
-      ag ? (isNA(g.scores.education) ? 'NA' : nv(g.scores.education)) : 'NA',
-      ag ? finalCause(g, 'education') : 'NA',
-      'NA',
-      'NA',
-      ag ? (isNA(g.scores.resolution) ? 'NA' : nv(g.scores.resolution)) : 'NA',
-      ag ? finalCause(g, 'resolution') : 'NA',
-      'NA',
-      'NA',
-      ag ? (isNA(g.scores.docs) ? 'NA' : nv(g.scores.docs)) : 'NA',
-      ag ? finalCause(g, 'docs') : 'NA',
-      ag ? (isNA(g.scores.chatbot) ? 'NA' : nv(g.scores.chatbot)) : 'NA',
-      ag ? finalCause(g, 'chatbot') : 'NA',
-      ag ? (g.af.autofail ? 'TRUE' : 'FALSE') : '',
-      '',
-      ag ? finalAFCause(g, 'autofail') : 'NA',
-      ag ? g.af.bug_esc : '',
-      ag ? finalAFCause(g, 'bug_esc') : '',
-      ag ? g.af.post_bug : '',
-      ag ? finalAFCause(g, 'post_bug') : '',
-      ag ? g.qaFeedback : ''
-    ]);
+    rows.push(submissionExportRow(t));
   });
 
   const csv = rows.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(';')).join('\n');
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
   downloadBlob(blob, `qa_grades_${fileStamp()}.csv`);
   toast('Exported ✓');
+}
+
+function buildSubmissionsExcelHtml() {
+  const tickets = filteredSubmissionTickets();
+  const cols = submissionsExportColumns();
+  const rows = tickets.map(submissionExportRow);
+  const chips = submissionsActiveChips();
+
+  return `<!DOCTYPE html>
+  <html>
+  <head>
+    <meta charset="UTF-8">
+    <title>QA Grader Submissions Export</title>
+    ${exportTableStyles()}
+  </head>
+  <body>
+    <h1>QA Grader Submissions Export</h1>
+    <div class="meta">Generated on ${new Date().toLocaleString()} · ${tickets.length} filtered ticket${tickets.length !== 1 ? 's' : ''}</div>
+    ${chips.length ? `<div class="chips">${chips.map(chip => `<span class="chip"><strong>${escapeHtml(chip.label)}:</strong> ${escapeHtml(chip.value)}</span>`).join('')}</div>` : ''}
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>${cols.map(col => `<th>${escapeHtml(col)}</th>`).join('')}</tr>
+        </thead>
+        <tbody>
+          ${rows.length ? rows.map(row => `<tr>${row.map(cell => `<td>${escapeHtml(cell ?? '')}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${cols.length}">No filtered submissions.</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  </body>
+  </html>`;
+}
+
+function exportSubmissionsExcel() {
+  const tickets = filteredSubmissionTickets();
+  if (!tickets.length) {
+    toast('No filtered submissions to export', 'err');
+    return;
+  }
+
+  const html = buildSubmissionsExcelHtml();
+  const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+  downloadBlob(blob, `qa_submissions_filtered_${fileStamp()}.xls`);
+  toast('Submissions Excel exported ✓');
 }
 
 async function exportAnalyticsExcel() {
@@ -3516,6 +3770,7 @@ if (themeSwitch) {
 const exportMenu = document.getElementById('export-menu');
 const exportMenuToggle = document.getElementById('export-menu-toggle');
 const exportCsvBtn = document.getElementById('export-csv-btn');
+const exportSubmissionsExcelBtn = document.getElementById('export-submissions-excel-btn');
 const exportAnalyticsExcelBtn = document.getElementById('export-analytics-excel-btn');
 const exportAnalyticsPdfBtn = document.getElementById('export-analytics-pdf-btn');
 
@@ -3547,6 +3802,16 @@ if (exportMenu && exportMenuToggle) {
 exportCsvBtn?.addEventListener('click', () => {
   setExportMenuOpen(false);
   exportCsv();
+});
+
+exportSubmissionsExcelBtn?.addEventListener('click', () => {
+  setExportMenuOpen(false);
+  try {
+    exportSubmissionsExcel();
+  } catch (e) {
+    console.error(e);
+    toast('Submissions Excel export failed', 'err');
+  }
 });
 
 exportAnalyticsExcelBtn?.addEventListener('click', async () => {

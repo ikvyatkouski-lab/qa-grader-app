@@ -274,15 +274,28 @@ let grades = {};
 let filter = 'all';
 let editing = false;
 let selectedIds = new Set();
-let F = { category:'', inbox:'', agent:'', week:'', convId:'', dateFrom:'', dateTo:'', grader:'', scoreFrom:'', scoreTo:'', autofail:'' };
+function defaultTicketFilters(){
+  return { category:'', inbox:'', agent:'', week:'', convId:'', dateFrom:'', dateTo:'', grader:'', scoreFrom:'', scoreTo:'', autofail:'' };
+}
+
+function defaultSubmissionFilters(){
+  return { categories:[], inboxes:[], agents:[], weeks:[], convId:'', dateFrom:'', dateTo:'', grader:'', scoreFrom:'', scoreTo:'', autofail:'' };
+}
+
+let F = defaultTicketFilters();
+let SF = defaultSubmissionFilters();
 let qfOpen = false;
 let charts = {};
 let toastTimer = null;
 let bulkGradeImportSupported = null;
+let notifications = { count: 0, items: [] };
+let currentDetailTicketId = null;
+let currentDetailOptions = {};
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500];
 let pagination = {
   grading: { page: 1, pageSize: 50 },
-  submissions: { page: 1, pageSize: 100 }
+  submissions: { page: 1, pageSize: 100 },
+  newTickets: { page: 1, pageSize: 100 }
 };
 
 function defaultAnalyticsFilters(){
@@ -376,6 +389,11 @@ function blankG(){
     numerator:null,
     denominator:null,
     totalPercent:null,
+    reflection:'',
+    reflectionSubmittedAt:'',
+    agentAcknowledgedAt:'',
+    reflectionReadAt:'',
+    graderUserId:null,
     submitted:false,
     grader:'Bot'
   };
@@ -1324,7 +1342,8 @@ function applyRoleUI() {
   document.querySelector('.tab[data-tab="g"]')?.style.setProperty('display', isAgent ? 'none' : '');
   document.querySelector('.tab[data-tab="s"]')?.style.setProperty('display', isAgent ? 'none' : '');
 
-  // My Graded Tickets — only for agents
+  // Agent tabs
+  document.querySelector('.tab[data-tab="n"]')?.style.setProperty('display', isAgent ? '' : 'none');
   document.querySelector('.tab[data-tab="m"]')?.style.setProperty('display', isAgent ? '' : 'none');
 
   // Admin tab
@@ -1341,12 +1360,16 @@ function applyRoleUI() {
   const graderImportLabel = document.getElementById('import-grader-label');
   if (graderImportLabel) graderImportLabel.style.display = canImport ? '' : 'none';
 
-  // For agents: switch default view to "My Graded Tickets"
+  const notifMenu = document.getElementById('notif-menu');
+  if (notifMenu) notifMenu.style.display = user ? '' : 'none';
+
+  // For agents: switch default view to "New Tickets"
   if (isAgent) {
     document.querySelectorAll('.tab').forEach(b => b.classList.remove('on'));
     document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
-    document.querySelector('.tab[data-tab="m"]')?.classList.add('on');
-    document.getElementById('vm')?.classList.add('on');
+    document.querySelector('.tab[data-tab="n"]')?.classList.add('on');
+    document.getElementById('vn')?.classList.add('on');
+    renderNewTickets();
     renderMyFilters();
     renderMyTickets();
   }
@@ -1375,6 +1398,7 @@ function hydrateGradeFromServerRow(row) {
   const g = blankG();
   g.submitted = !!row.submitted || !!row.grade_id;
   g.grader = row.grader_name || 'Bot';
+  g.graderUserId = row.grader_user_id ?? null;
   g.numerator = metricNumber(row.numerator);
   g.denominator = metricNumber(row.denominator);
   g.totalPercent = metricNumber(row.total_percent);
@@ -1385,6 +1409,10 @@ function hydrateGradeFromServerRow(row) {
   g.category = row.category || '';
   g.brianNotes = row.brian_notes || '';
   g.fixed = row.fixed || 'No';
+  g.reflection = row.reflection_text || '';
+  g.reflectionSubmittedAt = row.reflection_submitted_at || '';
+  g.agentAcknowledgedAt = row.agent_acknowledged_at || '';
+  g.reflectionReadAt = row.reflection_read_at || '';
 
   (row.breakdown || []).forEach(item => {
     g.scores[item.category_id] = item.score;
@@ -1402,6 +1430,79 @@ function hydrateGradeFromServerRow(row) {
   });
 
   return g;
+}
+
+function renderNotifications() {
+  const badge = document.getElementById('notif-badge');
+  const itemsHost = document.getElementById('notif-items');
+  if (badge) {
+    badge.style.display = notifications.count ? '' : 'none';
+    badge.textContent = String(notifications.count || 0);
+  }
+  if (!itemsHost) return;
+
+  if (!notifications.items.length) {
+    itemsHost.innerHTML = `<div class="notif-empty">No new notifications.</div>`;
+    return;
+  }
+
+  itemsHost.innerHTML = notifications.items.map(item => {
+    if (item.type === 'reflection_submitted') {
+      return `<div class="notif-item">
+        <div class="notif-item-top">
+          <div class="notif-item-title">${escapeHtml(item.agent || 'Agent')} submitted a reflection</div>
+          <div class="notif-item-meta">${fmtDate(item.ticket_date || item.event_at)}</div>
+        </div>
+        <div class="notif-item-meta">Ticket date: ${fmtDate(item.ticket_date)}${item.front_url ? ` · <a class="notif-link" href="${escapeHtml(item.front_url)}" target="_blank" rel="noopener noreferrer">Front link</a>` : ''}</div>
+        <div class="notif-item-actions">
+          <button class="notif-open" data-notif-open="${item.ticket_id}">Open ticket</button>
+        </div>
+      </div>`;
+    }
+
+    return `<div class="notif-item">
+      <div class="notif-item-top">
+        <div class="notif-item-title">${escapeHtml(item.subject || 'New graded ticket')}</div>
+        <div class="notif-item-meta">${fmtDate(item.ticket_date || item.event_at)}</div>
+      </div>
+      <div class="notif-item-meta">Grader: ${escapeHtml(item.grader_name || 'Bot')}${item.front_url ? ` · <a class="notif-link" href="${escapeHtml(item.front_url)}" target="_blank" rel="noopener noreferrer">Front link</a>` : ''}</div>
+      <div class="notif-item-actions">
+        <button class="notif-open" data-notif-open="${item.ticket_id}">Open ticket</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  itemsHost.querySelectorAll('[data-notif-open]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      setNotifMenuOpen(false);
+      openTicketDetail(btn.dataset.notifOpen, { fromNotification: true });
+    });
+  });
+}
+
+async function loadNotifications() {
+  if (!user) {
+    notifications = { count: 0, items: [] };
+    renderNotifications();
+    return;
+  }
+
+  try {
+    const r = await fetch(`${API_BASE}/api/notifications`, {
+      credentials: 'include'
+    });
+    if (!r.ok) throw new Error('Notification load failed');
+    const data = await r.json().catch(() => ({}));
+    notifications = {
+      count: Number(data.count) || 0,
+      items: Array.isArray(data.items) ? data.items : []
+    };
+  } catch (e) {
+    console.error(e);
+    notifications = { count: 0, items: [] };
+  }
+
+  renderNotifications();
 }
 
 async function loadTicketsFromServer() {
@@ -1430,8 +1531,10 @@ async function loadTicketsFromServer() {
   renderQueueFilters();
   renderList();
   renderSubs();
+  renderNewTickets();
   renderMyTickets();
   renderAnalytics();
+  await loadNotifications();
 }
 
 async function loadGradeForTicket(ticketId) {
@@ -1455,6 +1558,7 @@ async function loadGradeForTicket(ticketId) {
 
   g.submitted = !!data.grade.submitted || !!data.grade.id;
   g.grader = data.grade.grader_name || 'Bot';
+  g.graderUserId = data.grade.grader_user_id ?? null;
   g.numerator = metricNumber(data.grade.numerator);
   g.denominator = metricNumber(data.grade.denominator);
   g.totalPercent = metricNumber(data.grade.total_percent);
@@ -1465,6 +1569,10 @@ async function loadGradeForTicket(ticketId) {
   g.category = data.grade.category || '';
   g.brianNotes = data.grade.brian_notes || '';
   g.fixed = data.grade.fixed || 'No';
+  g.reflection = data.grade.reflection_text || '';
+  g.reflectionSubmittedAt = data.grade.reflection_submitted_at || '';
+  g.agentAcknowledgedAt = data.grade.agent_acknowledged_at || '';
+  g.reflectionReadAt = data.grade.reflection_read_at || '';
 
   (data.breakdown || []).forEach(row => {
     g.scores[row.category_id] = row.score;
@@ -1674,6 +1782,7 @@ function switchTab(t) {
   document.getElementById('v' + t)?.classList.add('on');
 
   if (t === 's') { renderSubsFilters(); renderSubs(); }
+  if (t === 'n') { renderNewTickets(); }
   if (t === 'm') { renderMyFilters(); renderMyTickets(); }
   if (t === 'a') renderAnalytics();
   if (t === 'u') loadAdminUsers();
@@ -1873,7 +1982,7 @@ function uniq(arr) { return [...new Set(arr.filter(Boolean))].sort(); }
 function ticketScore(t) {
   const g = grades[t.id];
   if (!g || !g.submitted) return null;
-  return typeof g.totalPct === 'number' ? g.totalPct : null;
+  return typeof g.totalPercent === 'number' ? g.totalPercent : null;
 }
 
 // ── Apply active filters to a ticket list ─────────────────────────────────
@@ -1893,6 +2002,26 @@ function applyFilters(tickets) {
     const sc = ticketScore(t);
     if (F.scoreFrom !== '' && sc !== null && sc < Number(F.scoreFrom)) return false;
     if (F.scoreTo   !== '' && sc !== null && sc > Number(F.scoreTo))   return false;
+    return true;
+  });
+}
+
+function applySubmissionFilters(tickets) {
+  return tickets.filter(t => {
+    const g = grades[t.id];
+    if (!analyticsCategoryMatch(t.id, SF.categories)) return false;
+    if (SF.inboxes.length && !SF.inboxes.includes(t.inbox || '')) return false;
+    if (SF.agents.length && !SF.agents.includes(t.agent || '')) return false;
+    if (SF.weeks.length && !SF.weeks.includes(t.week || '')) return false;
+    if (SF.convId && !convIdFromFrontUrl(t.frontUrl).toLowerCase().includes(String(SF.convId).trim().toLowerCase())) return false;
+    if (SF.grader && (g?.grader || '') !== SF.grader) return false;
+    if (SF.dateFrom && t.date && t.date < SF.dateFrom) return false;
+    if (SF.dateTo && t.date && t.date > SF.dateTo) return false;
+    if (SF.autofail === 'yes' && !g?.af?.autofail) return false;
+    if (SF.autofail === 'no' && g?.af?.autofail) return false;
+    const sc = ticketScore(t);
+    if (SF.scoreFrom !== '' && sc !== null && sc < Number(SF.scoreFrom)) return false;
+    if (SF.scoreTo !== '' && sc !== null && sc > Number(SF.scoreTo)) return false;
     return true;
   });
 }
@@ -2115,50 +2244,65 @@ function renderSubsFilters() {
   const weeks   = uniq(submitted.map(t => t.week));
   const inboxes = uniq(submitted.map(t => t.inbox));
   const agents  = canSeeAgent ? uniq(submitted.map(t => t.agent)) : [];
-  const cats    = uniq(submitted.map(t => grades[t.id]?.category).filter(Boolean));
+  const cats    = ANALYTICS_CATEGORY_OPTIONS.map(item => ({ value: item.id, label: item.label }));
   const graders = uniq(submitted.map(t => grades[t.id]?.grader).filter(Boolean));
-
-  const opt = (key, arr) => arr.map(o => `<option value="${o}" ${F[key]===o?'selected':''}>${o}</option>`).join('');
+  const checkGroup = (label, key, options, selectedValues) => {
+    if (!options.length) return '';
+    return `<div class="hfbar-grp hfbar-grp-check">
+      <span class="hfbar-lbl">${escapeHtml(label)}</span>
+      <div class="hfcheck" data-sf-checkgroup="${escapeHtml(key)}">
+        ${options.map(option => `<label class="hfcheck-item">
+          <input type="checkbox" value="${escapeHtml(option.value)}" ${selectedValues.includes(option.value) ? 'checked' : ''}>
+          <span>${escapeHtml(option.label)}</span>
+        </label>`).join('')}
+      </div>
+    </div>`;
+  };
+  const textOptions = values => values.map(value => ({ value, label: value }));
 
   cont.innerHTML = `<div class="hfbar">
-    ${cats.length ? `<div class="hfbar-grp"><span class="hfbar-lbl">Category</span>
-      <select data-f="category"><option value="">All</option>${opt('category',cats)}</select></div>` : ''}
-    <div class="hfbar-grp"><span class="hfbar-lbl">Inbox</span>
-      <select data-f="inbox"><option value="">All</option>${opt('inbox',inboxes)}</select></div>
-    ${canSeeAgent ? `<div class="hfbar-grp"><span class="hfbar-lbl">Agent</span>
-      <select data-f="agent"><option value="">All</option>${opt('agent',agents)}</select></div>` : ''}
-    ${weeks.length ? `<div class="hfbar-grp"><span class="hfbar-lbl">Week</span>
-      <select data-f="week"><option value="">All</option>${opt('week',weeks)}</select></div>` : ''}
+    ${checkGroup('Category', 'categories', cats, SF.categories)}
+    ${checkGroup('Inbox', 'inboxes', textOptions(inboxes), SF.inboxes)}
+    ${canSeeAgent ? checkGroup('Agent', 'agents', textOptions(agents), SF.agents) : ''}
+    ${checkGroup('Week', 'weeks', textOptions(weeks), SF.weeks)}
     <div class="hfbar-grp"><span class="hfbar-lbl">cnv_it</span>
-      <input type="text" data-f="convId" value="${escapeHtml(F.convId)}" placeholder="Search cnv_it"></div>
+      <input type="text" data-sf="convId" value="${escapeHtml(SF.convId)}" placeholder="Search cnv_it"></div>
     <div class="hfbar-grp"><span class="hfbar-lbl">From</span>
-      <input type="date" data-f="dateFrom" value="${F.dateFrom}"></div>
+      <input type="date" data-sf="dateFrom" value="${SF.dateFrom}"></div>
     <div class="hfbar-grp"><span class="hfbar-lbl">To</span>
-      <input type="date" data-f="dateTo"   value="${F.dateTo}"></div>
+      <input type="date" data-sf="dateTo"   value="${SF.dateTo}"></div>
     ${graders.length ? `<div class="hfbar-grp"><span class="hfbar-lbl">Grader</span>
-      <select data-f="grader"><option value="">All</option>${opt('grader',graders)}</select></div>` : ''}
+      <select data-sf="grader"><option value="">All</option>${graders.map(o => `<option value="${o}" ${SF.grader===o?'selected':''}>${o}</option>`).join('')}</select></div>` : ''}
     <div class="hfbar-grp"><span class="hfbar-lbl">Score from</span>
-      <input type="number" data-f="scoreFrom" value="${F.scoreFrom}" placeholder="0"   min="0" max="100" style="width:60px"></div>
+      <input type="number" data-sf="scoreFrom" value="${SF.scoreFrom}" placeholder="0"   min="0" max="100" style="width:60px"></div>
     <div class="hfbar-grp"><span class="hfbar-lbl">Score to</span>
-      <input type="number" data-f="scoreTo"   value="${F.scoreTo}"   placeholder="100" min="0" max="100" style="width:60px"></div>
+      <input type="number" data-sf="scoreTo"   value="${SF.scoreTo}"   placeholder="100" min="0" max="100" style="width:60px"></div>
     <div class="hfbar-grp"><span class="hfbar-lbl">Auto-fail</span>
-      <select data-f="autofail"><option value="">All</option><option value="yes" ${F.autofail==='yes'?'selected':''}>Yes</option><option value="no" ${F.autofail==='no'?'selected':''}>No</option></select></div>
+      <select data-sf="autofail"><option value="">All</option><option value="yes" ${SF.autofail==='yes'?'selected':''}>Yes</option><option value="no" ${SF.autofail==='no'?'selected':''}>No</option></select></div>
     <button class="hfbar-clear" id="hfbar-clear">Clear</button>
   </div>`;
 
-  cont.querySelectorAll('[data-f]').forEach(el => {
+  cont.querySelectorAll('[data-sf]').forEach(el => {
     const syncFilter = () => {
-      F[el.dataset.f] = el.value;
-      resetPager('grading');
+      SF[el.dataset.sf] = el.value;
       resetPager('submissions');
       renderSubs();
     };
     el.addEventListener('change', syncFilter);
     if (el.tagName === 'INPUT' && el.type === 'text') el.addEventListener('input', syncFilter);
   });
+  cont.querySelectorAll('[data-sf-checkgroup]').forEach(group => {
+    const syncChecks = () => {
+      SF[group.dataset.sfCheckgroup] = sanitizeStringArray(
+        [...group.querySelectorAll('input:checked')].map(input => input.value)
+      );
+      resetPager('submissions');
+      renderSubs();
+    };
+    group.querySelectorAll('input').forEach(input => input.addEventListener('change', syncChecks));
+  });
   cont.querySelector('#hfbar-clear')?.addEventListener('click', () => {
-    F = { category:'', inbox:'', agent:'', week:'', convId:'', dateFrom:'', dateTo:'', grader:'', scoreFrom:'', scoreTo:'', autofail:'' };
-    resetPager('grading');
+    SF = defaultSubmissionFilters();
     resetPager('submissions');
     renderSubsFilters();
     renderSubs();
@@ -2827,6 +2971,74 @@ function refreshT(id){
   if(!afActive && !below50 && existing){ renderDetail(); return; }
 }
 
+function isNewAgentTicket(ticketId) {
+  const g = grades[ticketId];
+  return user?.role === 'agent' && !!g?.submitted && !g.agentAcknowledgedAt;
+}
+
+function renderNewTickets() {
+  const countEl = document.getElementById('new-count');
+  const thead = document.querySelector('#new-table thead');
+  const tbody = document.querySelector('#new-table tbody');
+  const pagerHost = document.getElementById('new-pager');
+  if (!countEl || !thead || !tbody) return;
+
+  const tickets = TICKETS.filter(t => isNewAgentTicket(t.id));
+  const pageData = paginateItems(tickets, 'newTickets');
+  countEl.textContent = tickets.length ? `${tickets.length} new graded ticket${tickets.length !== 1 ? 's' : ''}` : 'No new graded tickets';
+
+  if (!tickets.length) {
+    thead.innerHTML = '';
+    tbody.innerHTML = `<tr><td colspan="200" style="padding:40px;text-align:center;color:var(--mu)">No new graded tickets</td></tr>`;
+    if (pagerHost) pagerHost.innerHTML = '';
+    return;
+  }
+
+  thead.innerHTML = `<tr>
+    <th>Open</th>
+    <th>Week</th>
+    <th>Ticket date</th>
+    <th>Agent</th>
+    <th>Created Time</th>
+    <th>Inbox</th>
+    <th>cnv_it</th>
+    <th>Front URL</th>
+    <th>Bot's score</th>
+    <th>Andi's score</th>
+    <th>Diff</th>
+    <th>Grader</th>
+    <th>QA Feedback</th>
+    <th>Reflection</th>
+  </tr>`;
+
+  tbody.innerHTML = pageData.items.map(t => {
+    const g = grades[t.id];
+    const aP = pct(agentRaw(t.id), agentDenom(t.id));
+    const bP = pct(botRaw(t), botDenom(t));
+    const diff = aP - bP;
+    const convId = convIdFromFrontUrl(t.frontUrl);
+    const reflection = (g.reflection || '').trim();
+    return `<tr>
+      <td><button class="tdm-open" onclick="openTicketDetail('${t.id}')">Open</button></td>
+      <td>${t.week || weekOf(t.date || t.createdTime)}</td>
+      <td>${fmtDate(t.date || t.createdTime)}</td>
+      <td>${t.agent || ''}</td>
+      <td style="font-size:10px">${t.createdTime || ''}</td>
+      <td>${t.inbox || ''}</td>
+      <td class="cn">${convId || ''}</td>
+      <td style="font-size:10px">${t.frontUrl ? `<a href="${t.frontUrl}" target="_blank" rel="noopener noreferrer">link</a>` : ''}</td>
+      <td><span class="schip" style="background:${bP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${scol(bP)}">${bP}%</span></td>
+      <td><span class="schip" style="background:${aP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${scol(aP)}">${aP}%</span></td>
+      <td class="cn" style="color:${diff > 0 ? 'var(--gr)' : diff < 0 ? 'var(--rd)' : 'var(--mu)'}">${diff > 0 ? '+' : ''}${diff}%</td>
+      <td>${g.grader || 'Bot'}</td>
+      <td class="cc">${g.qaFeedback || ''}</td>
+      <td class="cc">${reflection || (aP < 100 ? 'Pending' : 'Not required')}</td>
+    </tr>`;
+  }).join('');
+
+  renderPager('newTickets', 'new-pager', pageData);
+}
+
 function renderMyTickets() {
   const done = applyFilters(TICKETS.filter(t => grades[t.id]?.submitted));
   const countEl = document.getElementById('my-count');
@@ -2915,6 +3127,94 @@ function renderMyTickets() {
   }).join('');
 }
 
+async function acknowledgeAgentTicket(ticketId) {
+  const r = await fetch(`${API_BASE}/api/tickets/${ticketId}/agent-acknowledge`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error(data.error || 'Could not acknowledge ticket');
+  }
+  return r.json().catch(() => ({}));
+}
+
+async function submitTicketReflection(ticketId, reflection) {
+  const r = await fetch(`${API_BASE}/api/tickets/${ticketId}/reflection`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ reflection })
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error(data.error || 'Could not submit reflection');
+  }
+  return r.json().catch(() => ({}));
+}
+
+async function markTicketReflectionRead(ticketId) {
+  const r = await fetch(`${API_BASE}/api/tickets/${ticketId}/reflection-read`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error(data.error || 'Could not mark reflection as read');
+  }
+  return r.json().catch(() => ({}));
+}
+
+function wireTicketDetailReflection(ticketId, body) {
+  const addBtn = body.querySelector('#ticket-detail-add-reflection');
+  const form = body.querySelector('#ticket-detail-reflection-form');
+  const text = body.querySelector('#ticket-detail-reflection-text');
+  const submitBtn = body.querySelector('#ticket-detail-reflection-submit');
+
+  if (addBtn && form) {
+    addBtn.addEventListener('click', () => {
+      addBtn.style.display = 'none';
+      form.style.display = '';
+      if (text) {
+        text.style.height = 'auto';
+        text.style.height = `${Math.max(text.scrollHeight, 120)}px`;
+        text.focus();
+      }
+    });
+  }
+
+  if (text) {
+    const resize = () => {
+      text.style.height = 'auto';
+      text.style.height = `${Math.max(text.scrollHeight, 120)}px`;
+    };
+    text.addEventListener('input', resize);
+    resize();
+  }
+
+  if (submitBtn && text) {
+    submitBtn.addEventListener('click', async () => {
+      submitBtn.disabled = true;
+      try {
+        const data = await submitTicketReflection(ticketId, text.value);
+        if (grades[String(ticketId)]) {
+          grades[String(ticketId)].reflection = data.reflection_text || text.value.trim();
+          grades[String(ticketId)].reflectionSubmittedAt = data.reflection_submitted_at || new Date().toISOString();
+          grades[String(ticketId)].agentAcknowledgedAt = data.reflection_submitted_at || new Date().toISOString();
+        }
+        closeTicketDetail();
+        await loadTicketsFromServer();
+        switchTab('n');
+        toast('Reflection submitted ✓');
+      } catch (e) {
+        toast(e.message || 'Reflection submit failed', 'err');
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  }
+}
+
 function ticketDetailBody(t, g) {
   const aR = agentRaw(t.id);
   const bR = botRaw(t);
@@ -2925,6 +3225,8 @@ function ticketDetailBody(t, g) {
   const diff = aP - bP;
   const af = isAF(t.id);
   const wk = t.week || weekOf(t.date || t.createdTime);
+  const reflection = String(g.reflection || '').trim();
+  const needsReflection = user?.role === 'agent' && isNewAgentTicket(t.id) && aP < 100 && !reflection;
 
   return `
     <div class="tdm-grid">
@@ -2970,6 +3272,20 @@ function ticketDetailBody(t, g) {
       <div class="tdm-copy">${g.qaFeedback || '—'}</div>
     </div>
     <div class="tdm-sec">
+      <h4>Reflection</h4>
+      ${reflection ? `<div class="tdm-copy">${escapeHtml(reflection)}</div>` : `<div class="tdm-note">${aP < 100 ? 'Reflection is required before this ticket leaves your New Tickets list.' : 'No reflection submitted.'}</div>`}
+      ${needsReflection ? `
+        <div style="margin-top:10px">
+          <button class="tdm-reflect-btn" id="ticket-detail-add-reflection">Add Reflection</button>
+          <div class="tdm-reflect-form" id="ticket-detail-reflection-form" style="display:none;margin-top:10px">
+            <textarea id="ticket-detail-reflection-text" placeholder="Write your reflection here..."></textarea>
+            <div class="tdm-reflect-actions">
+              <button class="tdm-reflect-btn" id="ticket-detail-reflection-submit">Submit</button>
+            </div>
+          </div>
+        </div>` : ''}
+    </div>
+    <div class="tdm-sec">
       <h4>Additional Notes</h4>
       <div class="tdm-cats">
         <div class="tdm-cat"><div class="tdm-cat-top"><div class="tdm-cat-name">Agent's Focus</div></div><div class="tdm-cat-cause">${g.agentFocus || '—'}</div></div>
@@ -2983,9 +3299,12 @@ function ticketDetailBody(t, g) {
 function closeTicketDetail() {
   const modal = document.getElementById('ticket-detail-modal');
   if (modal) modal.style.display = 'none';
+  currentDetailTicketId = null;
+  currentDetailOptions = {};
 }
 
 window.openTicketDetail = async function(ticketId) {
+  const options = arguments[1] || {};
   const t = TICKETS.find(x => String(x.id) === String(ticketId));
   const g = grades[String(ticketId)];
   if (!t || !g) return;
@@ -2996,29 +3315,49 @@ window.openTicketDetail = async function(ticketId) {
   const body = document.getElementById('ticket-detail-body');
   if (!modal || !title || !subtitle || !body) return;
 
+  currentDetailTicketId = String(ticketId);
+  currentDetailOptions = options;
   modal.style.display = 'block';
   title.textContent = t.subject || 'Untitled ticket';
   subtitle.textContent = `${t.agent || '—'}${t.createdTime ? ` · ${t.createdTime}` : ''}${t.inbox ? ` · ${t.inbox}` : ''}`;
-  body.innerHTML = ticketDetailBody(t, g);
+  const renderModalBody = () => {
+    body.innerHTML = ticketDetailBody(t, grades[String(ticketId)]);
+    loadConvImages(body);
+    wireTicketDetailReflection(ticketId, body);
+    document.getElementById('ticket-detail-reload-conv')?.addEventListener('click', async () => {
+      t.conv = [];
+      renderModalBody();
+      await fetchFrontConv(t);
+      renderModalBody();
+    });
+  };
+  renderModalBody();
 
   if (t.frontUrl && !(t.conv && t.conv.length)) {
     await fetchFrontConv(t);
-    body.innerHTML = ticketDetailBody(t, g);
+    renderModalBody();
   }
 
-  loadConvImages(body);
-  document.getElementById('ticket-detail-reload-conv')?.addEventListener('click', async () => {
-    t.conv = [];
-    body.innerHTML = ticketDetailBody(t, g);
-    await fetchFrontConv(t);
-    body.innerHTML = ticketDetailBody(t, g);
-    loadConvImages(body);
-  });
+  try {
+    if (user?.role === 'agent' && isNewAgentTicket(ticketId) && generalPercent(ticketId) >= 100) {
+      const data = await acknowledgeAgentTicket(ticketId);
+      grades[String(ticketId)].agentAcknowledgedAt = data.agent_acknowledged_at || new Date().toISOString();
+      renderNewTickets();
+      await loadNotifications();
+    }
+    if (user?.role !== 'agent' && grades[String(ticketId)]?.reflectionSubmittedAt && !grades[String(ticketId)]?.reflectionReadAt) {
+      const data = await markTicketReflectionRead(ticketId);
+      grades[String(ticketId)].reflectionReadAt = data.reflection_read_at || new Date().toISOString();
+      await loadNotifications();
+    }
+  } catch (e) {
+    console.error(e);
+  }
 };
 
 function renderSubs(){
   const allDone = TICKETS.filter(t => grades[t.id]?.submitted);
-  const done = applyFilters(allDone);
+  const done = applySubmissionFilters(allDone);
   const pageData = paginateItems(done, 'submissions');
   document.getElementById('sub-count').textContent = done.length ? `${done.length} submitted grade${done.length !== 1 ? 's' : ''}` : 'No graded tickets yet';
 
@@ -3058,6 +3397,7 @@ function renderSubs(){
     <th>Post Bug Esc</th>
     <th>Post Bug Esc Cause</th>
     <th>QA Feedback</th>
+    <th>Reflection</th>
     <th>Actions</th>
   </tr>`;
 
@@ -3104,6 +3444,7 @@ function renderSubs(){
       <td>${isNA(g.af.post_bug) ? 'NA' : g.af.post_bug}</td>
       <td class="cc">${finalAFCause(g, 'post_bug')}</td>
       <td class="cc">${g.qaFeedback || ''}</td>
+      <td class="cc">${g.reflection || ''}</td>
       <td>${['admin','cs_leader'].includes(user?.role) ? `<button class="bsm" onclick="deleteTicketFromTable('${t.id}')">Delete</button>` : ''}</td>
     </tr>`;
   }).join('');
@@ -3415,45 +3756,25 @@ function analyticsReportStyles() {
   `;
 }
 
-async function buildAnalyticsReportHtml() {
-  await renderAnalytics();
-
-  const kpis = document.querySelector('#an-content .kpis')?.innerHTML || '';
-  const activeChips = analyticsActiveChips();
-  const critChart = document.getElementById('ch-crit')?.toDataURL('image/png') || '';
-  const distChart = document.getElementById('ch-dist')?.toDataURL('image/png') || '';
-  const sections = [
-    { title: 'Weekly Ranking By General Score', id: 'atbl-general' },
-    { title: 'Weekly Ranking By Grader', id: 'atbl-grader' },
-    { title: 'Weekly Ranking By Bot', id: 'atbl-bot' }
-  ];
-
-  return `<!DOCTYPE html>
-  <html>
-  <head>
-    <meta charset="UTF-8">
-    <title>QA Grader Analytics Report</title>
-    ${analyticsReportStyles()}
-  </head>
-  <body>
-    <h1>QA Grader Analytics Report</h1>
-    <div class="meta">Generated on ${new Date().toLocaleString()}</div>
-    ${activeChips ? `<div class="chips">${activeChips.replace(/class="analytics-chip"/g, 'class="chip"').replace(/analytics-active/g, '')}</div>` : ''}
-    ${kpis ? `<div class="kpis">${kpis}</div>` : ''}
-    <div class="chart-grid">
-      ${critChart ? `<div class="chart-card"><h2>Criteria Avg — Grader vs Bot</h2><img src="${critChart}" alt="Criteria chart"></div>` : ''}
-      ${distChart ? `<div class="chart-card"><h2>Grader Score Distribution</h2><img src="${distChart}" alt="Distribution chart"></div>` : ''}
-    </div>
-    ${sections.map(section => {
-      const table = document.getElementById(section.id);
-      return table ? `<div class="table-card"><h2>${section.title}</h2>${table.outerHTML}</div>` : '';
-    }).join('')}
-  </body>
-  </html>`;
+function exportTableStyles() {
+  return `
+    <style>
+      body{font-family:Arial,sans-serif;background:#fff;color:#172033;margin:24px}
+      h1{font-size:24px;margin:0 0 8px}
+      .meta{font-size:12px;color:#667085;margin-bottom:16px}
+      .chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 18px}
+      .chip{display:inline-flex;gap:6px;padding:6px 10px;border:1px solid #d8dfeb;border-radius:999px;font-size:12px}
+      .chip strong{color:#667085}
+      .table-card{padding:14px;border:1px solid #d8dfeb;border-radius:12px;overflow:auto}
+      table{border-collapse:collapse;width:max-content;min-width:100%;font-size:12px}
+      th,td{border:1px solid #d8dfeb;padding:7px 10px;text-align:left;vertical-align:top}
+      th{background:#f3f6fb;font-size:11px;text-transform:uppercase;color:#667085}
+    </style>
+  `;
 }
 
-function exportCsv() {
-  const cols = [
+function submissionsExportColumns() {
+  return [
     'Week',
     'Ticket date',
     'Agent',
@@ -3507,84 +3828,194 @@ function exportCsv() {
     'Bug Escalation Cause',
     'Post Bug Escalation',
     'Post Bug Escalation Cause',
-    'QA Feedback'
+    'QA Feedback',
+    'Reflection'
+  ];
+}
+
+function submissionExportRow(t) {
+  const g = grades[t.id];
+  const ag = g && g.submitted;
+  const bNum = botRaw(t);
+  const bDen = botDenom(t);
+  const bScore = pct(bNum, bDen);
+  const aNum = ag ? agentRaw(t.id) : '';
+  const aDen = ag ? agentDenom(t.id) : '';
+  const aScore = ag ? pct(aNum, aDen) : '';
+  const diff = ag ? bScore - aScore : '';
+
+  return [
+    t.week || weekOf(t.date || t.createdTime),
+    fmtDate(t.date || t.createdTime),
+    t.agent || '',
+    t.createdTime || '',
+    t.inbox || '',
+    t.frontUrl || '',
+    bDen,
+    bNum,
+    bScore,
+    aDen,
+    aNum,
+    aScore,
+    diff,
+    ag ? (g.grader || user?.name || 'Bot') : '',
+    ag ? (isNA(g.scores.grammar) ? 'NA' : nv(g.scores.grammar)) : 'NA',
+    ag ? finalCause(g, 'grammar') : 'NA',
+    ag ? (isNA(g.scores.tone) ? 'NA' : nv(g.scores.tone)) : 'NA',
+    ag ? finalCause(g, 'tone') : 'NA',
+    ag ? (isNA(g.scores.timeliness) ? 'NA' : nv(g.scores.timeliness)) : 'NA',
+    ag ? finalCause(g, 'timeliness') : 'NA',
+    'NA',
+    'NA',
+    ag ? (isNA(g.scores.efficiency) ? 'NA' : nv(g.scores.efficiency)) : 'NA',
+    ag ? finalCause(g, 'efficiency') : 'NA',
+    'NA',
+    'NA',
+    ag ? (isNA(g.scores.probing) ? 'NA' : nv(g.scores.probing)) : 'NA',
+    ag ? finalCause(g, 'probing') : 'NA',
+    'NA',
+    'NA',
+    ag ? (isNA(g.scores.problem) ? 'NA' : nv(g.scores.problem)) : 'NA',
+    ag ? finalCause(g, 'problem') : 'NA',
+    'NA',
+    'NA',
+    ag ? (isNA(g.scores.education) ? 'NA' : nv(g.scores.education)) : 'NA',
+    ag ? finalCause(g, 'education') : 'NA',
+    'NA',
+    'NA',
+    ag ? (isNA(g.scores.resolution) ? 'NA' : nv(g.scores.resolution)) : 'NA',
+    ag ? finalCause(g, 'resolution') : 'NA',
+    'NA',
+    'NA',
+    ag ? (isNA(g.scores.docs) ? 'NA' : nv(g.scores.docs)) : 'NA',
+    ag ? finalCause(g, 'docs') : 'NA',
+    ag ? (isNA(g.scores.chatbot) ? 'NA' : nv(g.scores.chatbot)) : 'NA',
+    ag ? finalCause(g, 'chatbot') : 'NA',
+    ag ? (g.af.autofail ? 'TRUE' : 'FALSE') : '',
+    '',
+    ag ? finalAFCause(g, 'autofail') : 'NA',
+    ag ? g.af.bug_esc : '',
+    ag ? finalAFCause(g, 'bug_esc') : '',
+    ag ? g.af.post_bug : '',
+    ag ? finalAFCause(g, 'post_bug') : '',
+    ag ? g.qaFeedback : '',
+    ag ? (g.reflection || '') : ''
+  ];
+}
+
+function filteredSubmissionTickets() {
+  return applySubmissionFilters(TICKETS.filter(t => grades[t.id]?.submitted));
+}
+
+function submissionsActiveChips() {
+  const chips = [];
+  SF.categories.forEach(value => chips.push({ label: 'Category', value }));
+  SF.inboxes.forEach(value => chips.push({ label: 'Inbox', value }));
+  SF.agents.forEach(value => chips.push({ label: 'Agent', value }));
+  SF.weeks.forEach(value => chips.push({ label: 'Week', value }));
+  if (SF.convId) chips.push({ label: 'cnv_it', value: SF.convId });
+  if (SF.dateFrom) chips.push({ label: 'From', value: SF.dateFrom });
+  if (SF.dateTo) chips.push({ label: 'To', value: SF.dateTo });
+  if (SF.grader) chips.push({ label: 'Grader', value: SF.grader });
+  if (SF.scoreFrom) chips.push({ label: 'Score from', value: SF.scoreFrom });
+  if (SF.scoreTo) chips.push({ label: 'Score to', value: SF.scoreTo });
+  if (SF.autofail) chips.push({ label: 'Auto-fail', value: SF.autofail });
+  return chips;
+}
+
+async function buildAnalyticsReportHtml() {
+  await renderAnalytics();
+
+  const kpis = document.querySelector('#an-content .kpis')?.innerHTML || '';
+  const activeChips = analyticsActiveChips();
+  const critChart = document.getElementById('ch-crit')?.toDataURL('image/png') || '';
+  const distChart = document.getElementById('ch-dist')?.toDataURL('image/png') || '';
+  const sections = [
+    { title: 'Weekly Ranking By General Score', id: 'atbl-general' },
+    { title: 'Weekly Ranking By Grader', id: 'atbl-grader' },
+    { title: 'Weekly Ranking By Bot', id: 'atbl-bot' }
   ];
 
+  return `<!DOCTYPE html>
+  <html>
+  <head>
+    <meta charset="UTF-8">
+    <title>QA Grader Analytics Report</title>
+    ${analyticsReportStyles()}
+  </head>
+  <body>
+    <h1>QA Grader Analytics Report</h1>
+    <div class="meta">Generated on ${new Date().toLocaleString()}</div>
+    ${activeChips ? `<div class="chips">${activeChips.replace(/class="analytics-chip"/g, 'class="chip"').replace(/analytics-active/g, '')}</div>` : ''}
+    ${kpis ? `<div class="kpis">${kpis}</div>` : ''}
+    <div class="chart-grid">
+      ${critChart ? `<div class="chart-card"><h2>Criteria Avg — Grader vs Bot</h2><img src="${critChart}" alt="Criteria chart"></div>` : ''}
+      ${distChart ? `<div class="chart-card"><h2>Grader Score Distribution</h2><img src="${distChart}" alt="Distribution chart"></div>` : ''}
+    </div>
+    ${sections.map(section => {
+      const table = document.getElementById(section.id);
+      return table ? `<div class="table-card"><h2>${section.title}</h2>${table.outerHTML}</div>` : '';
+    }).join('')}
+  </body>
+  </html>`;
+}
+
+function exportCsv() {
+  const cols = submissionsExportColumns();
   const rows = [cols];
 
   TICKETS.forEach(t => {
-    const g = grades[t.id];
-    const ag = g && g.submitted;
-    const bNum = botRaw(t);
-    const bDen = botDenom(t);
-    const bScore = pct(bNum, bDen);
-    const aNum = ag ? agentRaw(t.id) : '';
-    const aDen = ag ? agentDenom(t.id) : '';
-    const aScore = ag ? pct(aNum, aDen) : '';
-    const diff = ag ? bScore - aScore : '';
-
-    rows.push([
-      t.week || weekOf(t.date || t.createdTime),
-      fmtDate(t.date || t.createdTime),
-      t.agent || '',
-      t.createdTime || '',
-      t.inbox || '',
-      t.frontUrl || '',
-      bDen,
-      bNum,
-      bScore,
-      aDen,
-      aNum,
-      aScore,
-      diff,
-      ag ? (g.grader || user?.name || 'Bot') : '',
-      ag ? (isNA(g.scores.grammar) ? 'NA' : nv(g.scores.grammar)) : 'NA',
-      ag ? finalCause(g, 'grammar') : 'NA',
-      ag ? (isNA(g.scores.tone) ? 'NA' : nv(g.scores.tone)) : 'NA',
-      ag ? finalCause(g, 'tone') : 'NA',
-      ag ? (isNA(g.scores.timeliness) ? 'NA' : nv(g.scores.timeliness)) : 'NA',
-      ag ? finalCause(g, 'timeliness') : 'NA',
-      'NA',
-      'NA',
-      ag ? (isNA(g.scores.efficiency) ? 'NA' : nv(g.scores.efficiency)) : 'NA',
-      ag ? finalCause(g, 'efficiency') : 'NA',
-      'NA',
-      'NA',
-      ag ? (isNA(g.scores.probing) ? 'NA' : nv(g.scores.probing)) : 'NA',
-      ag ? finalCause(g, 'probing') : 'NA',
-      'NA',
-      'NA',
-      ag ? (isNA(g.scores.problem) ? 'NA' : nv(g.scores.problem)) : 'NA',
-      ag ? finalCause(g, 'problem') : 'NA',
-      'NA',
-      'NA',
-      ag ? (isNA(g.scores.education) ? 'NA' : nv(g.scores.education)) : 'NA',
-      ag ? finalCause(g, 'education') : 'NA',
-      'NA',
-      'NA',
-      ag ? (isNA(g.scores.resolution) ? 'NA' : nv(g.scores.resolution)) : 'NA',
-      ag ? finalCause(g, 'resolution') : 'NA',
-      'NA',
-      'NA',
-      ag ? (isNA(g.scores.docs) ? 'NA' : nv(g.scores.docs)) : 'NA',
-      ag ? finalCause(g, 'docs') : 'NA',
-      ag ? (isNA(g.scores.chatbot) ? 'NA' : nv(g.scores.chatbot)) : 'NA',
-      ag ? finalCause(g, 'chatbot') : 'NA',
-      ag ? (g.af.autofail ? 'TRUE' : 'FALSE') : '',
-      '',
-      ag ? finalAFCause(g, 'autofail') : 'NA',
-      ag ? g.af.bug_esc : '',
-      ag ? finalAFCause(g, 'bug_esc') : '',
-      ag ? g.af.post_bug : '',
-      ag ? finalAFCause(g, 'post_bug') : '',
-      ag ? g.qaFeedback : ''
-    ]);
+    rows.push(submissionExportRow(t));
   });
 
   const csv = rows.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(';')).join('\n');
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
   downloadBlob(blob, `qa_grades_${fileStamp()}.csv`);
   toast('Exported ✓');
+}
+
+function buildSubmissionsExcelHtml() {
+  const tickets = filteredSubmissionTickets();
+  const cols = submissionsExportColumns();
+  const rows = tickets.map(submissionExportRow);
+  const chips = submissionsActiveChips();
+
+  return `<!DOCTYPE html>
+  <html>
+  <head>
+    <meta charset="UTF-8">
+    <title>QA Grader Submissions Export</title>
+    ${exportTableStyles()}
+  </head>
+  <body>
+    <h1>QA Grader Submissions Export</h1>
+    <div class="meta">Generated on ${new Date().toLocaleString()} · ${tickets.length} filtered ticket${tickets.length !== 1 ? 's' : ''}</div>
+    ${chips.length ? `<div class="chips">${chips.map(chip => `<span class="chip"><strong>${escapeHtml(chip.label)}:</strong> ${escapeHtml(chip.value)}</span>`).join('')}</div>` : ''}
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>${cols.map(col => `<th>${escapeHtml(col)}</th>`).join('')}</tr>
+        </thead>
+        <tbody>
+          ${rows.length ? rows.map(row => `<tr>${row.map(cell => `<td>${escapeHtml(cell ?? '')}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${cols.length}">No filtered submissions.</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  </body>
+  </html>`;
+}
+
+function exportSubmissionsExcel() {
+  const tickets = filteredSubmissionTickets();
+  if (!tickets.length) {
+    toast('No filtered submissions to export', 'err');
+    return;
+  }
+
+  const html = buildSubmissionsExcelHtml();
+  const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+  downloadBlob(blob, `qa_submissions_filtered_${fileStamp()}.xls`);
+  toast('Submissions Excel exported ✓');
 }
 
 async function exportAnalyticsExcel() {
@@ -3639,8 +4070,11 @@ if (themeSwitch) {
 const exportMenu = document.getElementById('export-menu');
 const exportMenuToggle = document.getElementById('export-menu-toggle');
 const exportCsvBtn = document.getElementById('export-csv-btn');
+const exportSubmissionsExcelBtn = document.getElementById('export-submissions-excel-btn');
 const exportAnalyticsExcelBtn = document.getElementById('export-analytics-excel-btn');
 const exportAnalyticsPdfBtn = document.getElementById('export-analytics-pdf-btn');
+const notifMenu = document.getElementById('notif-menu');
+const notifToggle = document.getElementById('notif-toggle');
 
 function setExportMenuOpen(open) {
   if (!exportMenu) return;
@@ -3648,9 +4082,16 @@ function setExportMenuOpen(open) {
   if (exportMenuToggle) exportMenuToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
 
+function setNotifMenuOpen(open) {
+  if (!notifMenu) return;
+  notifMenu.classList.toggle('open', !!open);
+  if (notifToggle) notifToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
 if (exportMenu && exportMenuToggle) {
   exportMenuToggle.addEventListener('click', e => {
     e.stopPropagation();
+    setNotifMenuOpen(false);
     setExportMenuOpen(!exportMenu.classList.contains('open'));
   });
 
@@ -3660,16 +4101,42 @@ if (exportMenu && exportMenuToggle) {
 
   document.addEventListener('click', () => {
     setExportMenuOpen(false);
+    setNotifMenuOpen(false);
   });
 
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') setExportMenuOpen(false);
+    if (e.key === 'Escape') {
+      setExportMenuOpen(false);
+      setNotifMenuOpen(false);
+    }
+  });
+}
+
+if (notifMenu && notifToggle) {
+  notifToggle.addEventListener('click', e => {
+    e.stopPropagation();
+    setExportMenuOpen(false);
+    setNotifMenuOpen(!notifMenu.classList.contains('open'));
+  });
+
+  notifMenu.addEventListener('click', e => {
+    e.stopPropagation();
   });
 }
 
 exportCsvBtn?.addEventListener('click', () => {
   setExportMenuOpen(false);
   exportCsv();
+});
+
+exportSubmissionsExcelBtn?.addEventListener('click', () => {
+  setExportMenuOpen(false);
+  try {
+    exportSubmissionsExcel();
+  } catch (e) {
+    console.error(e);
+    toast('Submissions Excel export failed', 'err');
+  }
 });
 
 exportAnalyticsExcelBtn?.addEventListener('click', async () => {

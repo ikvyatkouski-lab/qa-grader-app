@@ -187,6 +187,101 @@ const AGENT_LABEL_SQL = `CASE
   ELSE BTRIM(COALESCE(t.agent, ''))
 END`;
 
+function currentAgentKey(sessionUser) {
+  return normalizeAgentIdentity(sessionUser?.email || sessionUser?.username);
+}
+
+async function ensureReflectionSchema() {
+  const columnExists = async columnName => {
+    const result = await pool.query(
+      `SELECT 1
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'grades'
+         AND column_name = $1
+       LIMIT 1`,
+      [columnName]
+    );
+    return result.rows.length > 0;
+  };
+
+  const hadAgentAcknowledgedAt = await columnExists('agent_acknowledged_at');
+
+  await pool.query(`ALTER TABLE grades ADD COLUMN IF NOT EXISTS reflection_text text`);
+  await pool.query(`ALTER TABLE grades ADD COLUMN IF NOT EXISTS reflection_submitted_at timestamptz`);
+  await pool.query(`ALTER TABLE grades ADD COLUMN IF NOT EXISTS agent_acknowledged_at timestamptz`);
+  await pool.query(`ALTER TABLE grades ADD COLUMN IF NOT EXISTS reflection_read_at timestamptz`);
+
+  if (!hadAgentAcknowledgedAt) {
+    await pool.query(
+      `UPDATE grades
+       SET agent_acknowledged_at = COALESCE(submitted_at, NOW())
+       WHERE submitted = TRUE
+         AND agent_acknowledged_at IS NULL`
+    );
+  }
+}
+
+async function findAccessibleGrade(ticketId, sessionUser) {
+  const role = sessionUser?.role;
+
+  if (role === 'agent') {
+    const result = await pool.query(
+      `SELECT
+         t.id AS ticket_id,
+         t.ticket_date,
+         t.front_url,
+         t.agent,
+         t.subject,
+         g.id AS grade_id,
+         g.grader_user_id,
+         g.grader_name,
+         g.total_percent,
+         g.submitted,
+         g.submitted_at,
+         g.reflection_text,
+         g.reflection_submitted_at,
+         g.agent_acknowledged_at,
+         g.reflection_read_at
+       FROM tickets t
+       JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+       WHERE t.id = $1
+         AND t.deleted_at IS NULL
+         AND ${AGENT_KEY_SQL} = $2
+       LIMIT 1`,
+      [ticketId, currentAgentKey(sessionUser)]
+    );
+    return result.rows[0] || null;
+  }
+
+  const result = await pool.query(
+    `SELECT
+       t.id AS ticket_id,
+       t.ticket_date,
+       t.front_url,
+       t.agent,
+       t.subject,
+       g.id AS grade_id,
+       g.grader_user_id,
+       g.grader_name,
+       g.total_percent,
+       g.submitted,
+       g.submitted_at,
+       g.reflection_text,
+       g.reflection_submitted_at,
+       g.agent_acknowledged_at,
+       g.reflection_read_at
+     FROM tickets t
+     JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+     WHERE t.id = $1
+       AND t.deleted_at IS NULL
+     LIMIT 1`,
+    [ticketId]
+  );
+
+  return result.rows[0] || null;
+}
+
 function analyticsCategoryFilterSql(paramIndex) {
   return `(
     EXISTS (
@@ -355,7 +450,7 @@ async function upsertGrade(client, ticketId, payload, graderUserId) {
   let gradeId;
 
   const existing = await client.query(
-    `SELECT id
+    `SELECT id, submitted
      FROM grades
      WHERE ticket_id = $1 AND is_deleted = FALSE
      LIMIT 1`,
@@ -381,7 +476,9 @@ async function upsertGrade(client, ticketId, payload, graderUserId) {
            brian_notes = $12,
            fixed = $13,
            submitted = $14,
-           submitted_at = CASE WHEN $14 = TRUE THEN NOW() ELSE submitted_at END,
+           submitted_at = CASE WHEN $14 = TRUE AND submitted = FALSE THEN NOW() ELSE submitted_at END,
+           agent_acknowledged_at = CASE WHEN $14 = TRUE AND submitted = FALSE THEN NULL ELSE agent_acknowledged_at END,
+           reflection_read_at = CASE WHEN $14 = TRUE AND submitted = FALSE THEN NULL ELSE reflection_read_at END,
            updated_at = NOW()
        WHERE id = $15`,
       [
@@ -423,9 +520,13 @@ async function upsertGrade(client, ticketId, payload, graderUserId) {
         brian_notes,
         fixed,
         submitted,
-        submitted_at
+        submitted_at,
+        reflection_text,
+        reflection_submitted_at,
+        agent_acknowledged_at,
+        reflection_read_at
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, CASE WHEN $15 = TRUE THEN NOW() ELSE NULL END)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, CASE WHEN $15 = TRUE THEN NOW() ELSE NULL END, NULL, NULL, NULL, NULL)
       RETURNING id`,
       [
         ticketId,
@@ -482,7 +583,7 @@ async function bulkUpsertGrades(client, gradeRows, graderUserId) {
 
   const ticketIds = normalizedRows.map(row => row.ticket_id);
   const existingResult = await client.query(
-    `SELECT id, ticket_id
+    `SELECT id, ticket_id, submitted
      FROM grades
      WHERE ticket_id = ANY($1::bigint[])
        AND is_deleted = FALSE`,
@@ -492,14 +593,15 @@ async function bulkUpsertGrades(client, gradeRows, graderUserId) {
   const existingByTicketId = new Map();
   existingResult.rows.forEach(row => {
     const key = String(row.ticket_id);
-    if (!existingByTicketId.has(key)) existingByTicketId.set(key, row.id);
+    if (!existingByTicketId.has(key)) existingByTicketId.set(key, row);
   });
 
   const updates = [];
   const inserts = [];
 
   normalizedRows.forEach(row => {
-    const gradeId = existingByTicketId.get(String(row.ticket_id));
+    const existingGrade = existingByTicketId.get(String(row.ticket_id));
+    const gradeId = existingGrade?.id;
     const payload = row.grade_payload || {};
     const target = {
       ticket_id: row.ticket_id,
@@ -520,7 +622,7 @@ async function bulkUpsertGrades(client, gradeRows, graderUserId) {
     };
 
     if (gradeId) {
-      updates.push({ grade_id: gradeId, ...target });
+      updates.push({ grade_id: gradeId, was_submitted: !!existingGrade?.submitted, ...target });
     } else {
       inserts.push(target);
     }
@@ -543,11 +645,14 @@ async function bulkUpsertGrades(client, gradeRows, graderUserId) {
            brian_notes = src.brian_notes,
            fixed = src.fixed,
            submitted = src.submitted,
-           submitted_at = CASE WHEN src.submitted = TRUE THEN NOW() ELSE g.submitted_at END,
+           submitted_at = CASE WHEN src.submitted = TRUE AND src.was_submitted = FALSE THEN NOW() ELSE g.submitted_at END,
+           agent_acknowledged_at = CASE WHEN src.submitted = TRUE AND src.was_submitted = FALSE THEN NULL ELSE g.agent_acknowledged_at END,
+           reflection_read_at = CASE WHEN src.submitted = TRUE AND src.was_submitted = FALSE THEN NULL ELSE g.reflection_read_at END,
            updated_at = NOW()
        FROM json_to_recordset($1::json) AS src(
          grade_id bigint,
          ticket_id bigint,
+         was_submitted boolean,
          grader_user_id bigint,
          grader_name text,
          grader_type text,
@@ -586,7 +691,11 @@ async function bulkUpsertGrades(client, gradeRows, graderUserId) {
          brian_notes,
          fixed,
          submitted,
-         submitted_at
+         submitted_at,
+         reflection_text,
+         reflection_submitted_at,
+         agent_acknowledged_at,
+         reflection_read_at
        )
        SELECT
          src.ticket_id,
@@ -604,7 +713,11 @@ async function bulkUpsertGrades(client, gradeRows, graderUserId) {
          src.brian_notes,
          src.fixed,
          src.submitted,
-         CASE WHEN src.submitted = TRUE THEN NOW() ELSE NULL END
+         CASE WHEN src.submitted = TRUE THEN NOW() ELSE NULL END,
+         NULL,
+         NULL,
+         NULL,
+         NULL
        FROM json_to_recordset($1::json) AS src(
          ticket_id bigint,
          grader_user_id bigint,
@@ -919,12 +1032,13 @@ app.get('/api/front/attachment', requireAuth, async (req, res) => {
 app.get('/api/tickets', requireAuth, async (req, res) => {
   try {
     const isAgent = req.session.user.role === 'agent';
-    const params = isAgent ? [req.session.user.email] : [];
+    const params = isAgent ? [currentAgentKey(req.session.user)] : [];
 
     const result = await pool.query(`
       SELECT
         t.*,
         g.id AS grade_id,
+        g.grader_user_id,
         g.grader_name,
         g.grader_type,
         g.numerator,
@@ -939,6 +1053,10 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
         g.fixed,
         g.submitted,
         g.submitted_at,
+        g.reflection_text,
+        g.reflection_submitted_at,
+        g.agent_acknowledged_at,
+        g.reflection_read_at,
         COALESCE((
           SELECT json_agg(
             json_build_object(
@@ -968,11 +1086,171 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
       FROM tickets t
       LEFT JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
       WHERE t.deleted_at IS NULL
-      ${isAgent ? 'AND t.agent = $1' : ''}
+      ${isAgent ? `AND ${AGENT_KEY_SQL} = $1` : ''}
       ORDER BY t.imported_at DESC
     `, params);
 
     res.json(result.rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/notifications', requireAuth, async (req, res) => {
+  try {
+    if (req.session.user.role === 'agent') {
+      const result = await pool.query(
+        `SELECT
+           t.id AS ticket_id,
+           t.subject,
+           t.front_url,
+           t.ticket_date,
+           g.submitted_at AS event_at,
+           g.grader_name,
+           g.total_percent
+         FROM tickets t
+         JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+         WHERE t.deleted_at IS NULL
+           AND g.submitted = TRUE
+           AND g.agent_acknowledged_at IS NULL
+           AND ${AGENT_KEY_SQL} = $1
+         ORDER BY g.submitted_at DESC NULLS LAST, t.imported_at DESC`,
+        [currentAgentKey(req.session.user)]
+      );
+
+      return res.json({
+        count: result.rows.length,
+        items: result.rows.map(row => ({
+          type: 'new_grade',
+          ticket_id: row.ticket_id,
+          subject: row.subject,
+          front_url: row.front_url,
+          ticket_date: row.ticket_date,
+          event_at: row.event_at,
+          grader_name: row.grader_name,
+          total_percent: row.total_percent
+        }))
+      });
+    }
+
+    const result = await pool.query(
+      `SELECT
+         t.id AS ticket_id,
+         t.subject,
+         t.front_url,
+         t.ticket_date,
+         t.agent,
+         g.reflection_submitted_at AS event_at,
+         g.reflection_text
+       FROM tickets t
+       JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+       WHERE t.deleted_at IS NULL
+         AND g.grader_user_id = $1
+         AND g.reflection_submitted_at IS NOT NULL
+         AND g.reflection_read_at IS NULL
+       ORDER BY g.reflection_submitted_at DESC, t.imported_at DESC`,
+      [req.session.user.id]
+    );
+
+    res.json({
+      count: result.rows.length,
+      items: result.rows.map(row => ({
+        type: 'reflection_submitted',
+        ticket_id: row.ticket_id,
+        subject: row.subject,
+        front_url: row.front_url,
+        ticket_date: row.ticket_date,
+        agent: row.agent,
+        event_at: row.event_at,
+        reflection_text: row.reflection_text
+      }))
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/tickets/:id/agent-acknowledge', requireAuth, async (req, res) => {
+  try {
+    if (req.session.user.role !== 'agent') {
+      return res.status(403).json({ error: 'Agent only' });
+    }
+
+    const grade = await findAccessibleGrade(req.params.id, req.session.user);
+    if (!grade) return res.status(404).json({ error: 'Ticket not found' });
+
+    await pool.query(
+      `UPDATE grades
+       SET agent_acknowledged_at = COALESCE(agent_acknowledged_at, NOW())
+       WHERE id = $1`,
+      [grade.grade_id]
+    );
+
+    res.json({ ok: true, agent_acknowledged_at: new Date().toISOString() });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/tickets/:id/reflection', requireAuth, async (req, res) => {
+  try {
+    if (req.session.user.role !== 'agent') {
+      return res.status(403).json({ error: 'Agent only' });
+    }
+
+    const grade = await findAccessibleGrade(req.params.id, req.session.user);
+    if (!grade) return res.status(404).json({ error: 'Ticket not found' });
+
+    const reflection = String(req.body?.reflection || '').trim();
+    const totalPercent = Number(grade.total_percent);
+    if (Number.isFinite(totalPercent) && totalPercent < 100 && !reflection) {
+      return res.status(400).json({ error: 'Reflection is required for tickets below 100%.' });
+    }
+
+    await pool.query(
+      `UPDATE grades
+       SET reflection_text = $1,
+           reflection_submitted_at = NOW(),
+           agent_acknowledged_at = NOW(),
+           reflection_read_at = NULL
+       WHERE id = $2`,
+      [reflection, grade.grade_id]
+    );
+
+    res.json({
+      ok: true,
+      reflection_text: reflection,
+      reflection_submitted_at: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/tickets/:id/reflection-read', requireAuth, async (req, res) => {
+  try {
+    if (req.session.user.role === 'agent') {
+      return res.status(403).json({ error: 'Grader only' });
+    }
+
+    const grade = await findAccessibleGrade(req.params.id, req.session.user);
+    if (!grade) return res.status(404).json({ error: 'Ticket not found' });
+    if (grade.grader_user_id !== req.session.user.id && !['admin', 'cs_leader'].includes(req.session.user.role)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    await pool.query(
+      `UPDATE grades
+       SET reflection_read_at = COALESCE(reflection_read_at, NOW())
+       WHERE id = $1`,
+      [grade.grade_id]
+    );
+
+    res.json({ ok: true, reflection_read_at: new Date().toISOString() });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -1612,6 +1890,13 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(port, () => {
-  console.log(`API listening on http://localhost:${port}`);
-});
+ensureReflectionSchema()
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`API listening on http://localhost:${port}`);
+    });
+  })
+  .catch(error => {
+    console.error('Failed to initialize database schema', error);
+    process.exit(1);
+  });
