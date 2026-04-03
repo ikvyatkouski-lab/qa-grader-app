@@ -3059,15 +3059,6 @@ async function renderAnalytics(){
   }
 
   const currentAgentKey = normalizeAgentIdentity(user?.email || user?.name);
-  const myFilteredGeneralRank = user?.role === 'agent'
-    ? (filteredGeneralRows.find(r => normalizeAgentIdentity(r.ag) === currentAgentKey)?.rank || 0)
-    : 0;
-  const myFilteredGraderRank = user?.role === 'agent'
-    ? (filteredGraderRows.find(r => normalizeAgentIdentity(r.ag) === currentAgentKey)?.rank || 0)
-    : 0;
-  const myFilteredBotRank = user?.role === 'agent'
-    ? (filteredBotRows.find(r => normalizeAgentIdentity(r.ag) === currentAgentKey)?.rank || 0)
-    : 0;
   const myAllTimeGeneralRank = user?.role === 'agent'
     ? (allTimeGeneralRows.find(r => normalizeAgentIdentity(r.ag) === currentAgentKey)?.rank || 0)
     : 0;
@@ -3077,16 +3068,6 @@ async function renderAnalytics(){
   const myAllTimeBotRank = user?.role === 'agent'
     ? (allTimeBotRows.find(r => normalizeAgentIdentity(r.ag) === currentAgentKey)?.rank || 0)
     : 0;
-
-  const filteredGeneralRankLabel = user?.role === 'agent'
-    ? (myFilteredGeneralRank > 0 ? `#${myFilteredGeneralRank}` : '—')
-    : `${filteredGeneralRows.length}`;
-  const filteredGraderRankLabel = user?.role === 'agent'
-    ? (myFilteredGraderRank > 0 ? `#${myFilteredGraderRank}` : '—')
-    : `${filteredGraderRows.length}`;
-  const filteredBotRankLabel = user?.role === 'agent'
-    ? (myFilteredBotRank > 0 ? `#${myFilteredBotRank}` : '—')
-    : `${filteredBotRows.length}`;
   const allTimeGeneralRankLabel = user?.role === 'agent'
     ? (myAllTimeGeneralRank > 0 ? `#${myAllTimeGeneralRank}` : '—')
     : `${allTimeGeneralRows.length}`;
@@ -3114,22 +3095,23 @@ async function renderAnalytics(){
 
   cont.innerHTML = `${renderAnalyticsFilters(allDone)}
   ${analyticsActiveChips()}
-  ${!done.length ? `<div class="an-empty"><div class="empty-ic">📊</div><p>No analytics match the current filters.</p></div>` : `<div class="kpis">
-    <div class="kpi"><div class="kv" style="color:#0ea5a4">${avgGeneralScore}%</div><div class="kl">Avg general score</div><div class="ks">grader + bot, ${filteredGeneralCount} filtered tickets</div></div>
+  ${!done.length ? `<div class="an-empty"><div class="empty-ic">📊</div><p>No analytics match the current filters.</p></div>` : `<div class="kpi-section-label">Filtered</div>
+  <div class="kpis">
+    <div class="kpi"><div class="kv" style="color:#0ea5a4">${avgGeneralScore}%</div><div class="kl">Avg general score</div><div class="ks">Andi's score, ${filteredGeneralCount} filtered tickets</div></div>
     <div class="kpi"><div class="kv" style="color:#1ec97a">${filteredTicketCount}</div><div class="kl">Filtered tickets</div><div class="ks">${filteredGraderCount} graded by grader</div></div>
     <div class="kpi"><div class="kv" style="color:#4f7cff">${avgGraderScore}%</div><div class="kl">Avg grader score</div><div class="ks">human-graded only</div></div>
     <div class="kpi"><div class="kv" style="color:#9d7df0">${avgBotScore}%</div><div class="kl">Avg bot score</div><div class="ks">all filtered tickets</div></div>
     <div class="kpi"><div class="kv" style="color:#f0a020">${avgDiff}%</div><div class="kl">Avg score gap</div><div class="ks">higher score minus lower score</div></div>
-    <div class="kpi"><div class="kv" style="color:#0ea5a4">${filteredGeneralRankLabel}</div><div class="kl">Filtered general rank</div><div class="ks">among ${filteredGeneralRows.length || 0}</div></div>
-    <div class="kpi"><div class="kv" style="color:#f0a020">${filteredGraderRankLabel}</div><div class="kl">Filtered grader rank</div><div class="ks">among ${filteredGraderRows.length || 0}</div></div>
-    <div class="kpi"><div class="kv" style="color:#1ec97a">${filteredBotRankLabel}</div><div class="kl">Filtered bot rank</div><div class="ks">among ${filteredBotRows.length || 0}</div></div>
-    <div class="kpi"><div class="kv" style="color:#0ea5a4">${allTimeAvgGeneralScore}%</div><div class="kl">All-time general avg</div><div class="ks">grader + bot, ${allTimeGeneralCount} tickets</div></div>
-    <div class="kpi"><div class="kv" style="color:#4f7cff">${allTimeAvgGraderScore}%</div><div class="kl">All-time grader avg</div><div class="ks">${allTimeGraderCount} human-graded tickets</div></div>
-    <div class="kpi"><div class="kv" style="color:#9d7df0">${allTimeAvgBotScore}%</div><div class="kl">All-time bot avg</div><div class="ks">all submitted tickets</div></div>
-    <div class="kpi"><div class="kv" style="color:#f0a020">${allTimeAvgDiff}%</div><div class="kl">All-time score gap</div><div class="ks">higher score minus lower score</div></div>
-    <div class="kpi"><div class="kv" style="color:#0ea5a4">${allTimeGeneralRankLabel}</div><div class="kl">All-time general rank</div><div class="ks">among ${allTimeGeneralRows.length || 0}</div></div>
-    <div class="kpi"><div class="kv" style="color:#f0a020">${allTimeGraderRankLabel}</div><div class="kl">All-time grader rank</div><div class="ks">among ${allTimeGraderRows.length || 0}</div></div>
-    <div class="kpi"><div class="kv" style="color:#1ec97a">${allTimeBotRankLabel}</div><div class="kl">All-time bot rank</div><div class="ks">among ${allTimeBotRows.length || 0}</div></div>
+  </div>
+  <div class="kpi-section-label">All-time</div>
+  <div class="kpis">
+    <div class="kpi"><div class="kv" style="color:#0ea5a4">${allTimeAvgGeneralScore}%</div><div class="kl">General avg</div><div class="ks">Andi's score, ${allTimeGeneralCount} tickets</div></div>
+    <div class="kpi"><div class="kv" style="color:#4f7cff">${allTimeAvgGraderScore}%</div><div class="kl">Grader avg</div><div class="ks">${allTimeGraderCount} human-graded tickets</div></div>
+    <div class="kpi"><div class="kv" style="color:#9d7df0">${allTimeAvgBotScore}%</div><div class="kl">Bot avg</div><div class="ks">all submitted tickets</div></div>
+    <div class="kpi"><div class="kv" style="color:#f0a020">${allTimeAvgDiff}%</div><div class="kl">Score gap</div><div class="ks">higher score minus lower score</div></div>
+    <div class="kpi"><div class="kv" style="color:#0ea5a4">${allTimeGeneralRankLabel}</div><div class="kl">General rank</div><div class="ks">among ${allTimeGeneralRows.length || 0}</div></div>
+    <div class="kpi"><div class="kv" style="color:#f0a020">${allTimeGraderRankLabel}</div><div class="kl">Grader rank</div><div class="ks">among ${allTimeGraderRows.length || 0}</div></div>
+    <div class="kpi"><div class="kv" style="color:#1ec97a">${allTimeBotRankLabel}</div><div class="kl">Bot rank</div><div class="ks">among ${allTimeBotRows.length || 0}</div></div>
   </div>
   <div class="cgrid">
     <div class="ccard wide"><div class="ctitle">Weekly Ranking By General Score</div><div class="rank-scroll"><table class="atbl" id="atbl-general"></table></div></div>

@@ -160,16 +160,7 @@ const BOT_PERCENT_SQL = `COALESCE(
 )`;
 
 const HUMAN_GRADE_SQL = `LOWER(BTRIM(COALESCE(NULLIF(g.grader_name, ''), NULLIF(g.grader_type, ''), 'bot'))) <> 'bot'`;
-const GENERAL_PERCENT_SQL = `CASE
-  WHEN ${HUMAN_GRADE_SQL}
-    AND g.total_percent IS NOT NULL
-    AND ${BOT_PERCENT_SQL} IS NOT NULL
-  THEN (g.total_percent::numeric + ${BOT_PERCENT_SQL}) / 2
-  WHEN ${HUMAN_GRADE_SQL}
-    AND g.total_percent IS NOT NULL
-  THEN g.total_percent::numeric
-  ELSE ${BOT_PERCENT_SQL}
-END`;
+const GENERAL_PERCENT_SQL = `g.total_percent::numeric`;
 const AGENT_KEY_SQL = `CASE
   WHEN LOWER(BTRIM(COALESCE(t.agent, ''))) IN ('ed', 'ednalyn.c')
   THEN 'ednalyn.c'
