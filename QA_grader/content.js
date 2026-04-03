@@ -288,10 +288,14 @@ let qfOpen = false;
 let charts = {};
 let toastTimer = null;
 let bulkGradeImportSupported = null;
+let notifications = { count: 0, items: [] };
+let currentDetailTicketId = null;
+let currentDetailOptions = {};
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500];
 let pagination = {
   grading: { page: 1, pageSize: 50 },
-  submissions: { page: 1, pageSize: 100 }
+  submissions: { page: 1, pageSize: 100 },
+  newTickets: { page: 1, pageSize: 100 }
 };
 
 function defaultAnalyticsFilters(){
@@ -385,6 +389,11 @@ function blankG(){
     numerator:null,
     denominator:null,
     totalPercent:null,
+    reflection:'',
+    reflectionSubmittedAt:'',
+    agentAcknowledgedAt:'',
+    reflectionReadAt:'',
+    graderUserId:null,
     submitted:false,
     grader:'Bot'
   };
@@ -1333,7 +1342,8 @@ function applyRoleUI() {
   document.querySelector('.tab[data-tab="g"]')?.style.setProperty('display', isAgent ? 'none' : '');
   document.querySelector('.tab[data-tab="s"]')?.style.setProperty('display', isAgent ? 'none' : '');
 
-  // My Graded Tickets — only for agents
+  // Agent tabs
+  document.querySelector('.tab[data-tab="n"]')?.style.setProperty('display', isAgent ? '' : 'none');
   document.querySelector('.tab[data-tab="m"]')?.style.setProperty('display', isAgent ? '' : 'none');
 
   // Admin tab
@@ -1350,12 +1360,16 @@ function applyRoleUI() {
   const graderImportLabel = document.getElementById('import-grader-label');
   if (graderImportLabel) graderImportLabel.style.display = canImport ? '' : 'none';
 
-  // For agents: switch default view to "My Graded Tickets"
+  const notifMenu = document.getElementById('notif-menu');
+  if (notifMenu) notifMenu.style.display = user ? '' : 'none';
+
+  // For agents: switch default view to "New Tickets"
   if (isAgent) {
     document.querySelectorAll('.tab').forEach(b => b.classList.remove('on'));
     document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
-    document.querySelector('.tab[data-tab="m"]')?.classList.add('on');
-    document.getElementById('vm')?.classList.add('on');
+    document.querySelector('.tab[data-tab="n"]')?.classList.add('on');
+    document.getElementById('vn')?.classList.add('on');
+    renderNewTickets();
     renderMyFilters();
     renderMyTickets();
   }
@@ -1384,6 +1398,7 @@ function hydrateGradeFromServerRow(row) {
   const g = blankG();
   g.submitted = !!row.submitted || !!row.grade_id;
   g.grader = row.grader_name || 'Bot';
+  g.graderUserId = row.grader_user_id ?? null;
   g.numerator = metricNumber(row.numerator);
   g.denominator = metricNumber(row.denominator);
   g.totalPercent = metricNumber(row.total_percent);
@@ -1394,6 +1409,10 @@ function hydrateGradeFromServerRow(row) {
   g.category = row.category || '';
   g.brianNotes = row.brian_notes || '';
   g.fixed = row.fixed || 'No';
+  g.reflection = row.reflection_text || '';
+  g.reflectionSubmittedAt = row.reflection_submitted_at || '';
+  g.agentAcknowledgedAt = row.agent_acknowledged_at || '';
+  g.reflectionReadAt = row.reflection_read_at || '';
 
   (row.breakdown || []).forEach(item => {
     g.scores[item.category_id] = item.score;
@@ -1411,6 +1430,79 @@ function hydrateGradeFromServerRow(row) {
   });
 
   return g;
+}
+
+function renderNotifications() {
+  const badge = document.getElementById('notif-badge');
+  const itemsHost = document.getElementById('notif-items');
+  if (badge) {
+    badge.style.display = notifications.count ? '' : 'none';
+    badge.textContent = String(notifications.count || 0);
+  }
+  if (!itemsHost) return;
+
+  if (!notifications.items.length) {
+    itemsHost.innerHTML = `<div class="notif-empty">No new notifications.</div>`;
+    return;
+  }
+
+  itemsHost.innerHTML = notifications.items.map(item => {
+    if (item.type === 'reflection_submitted') {
+      return `<div class="notif-item">
+        <div class="notif-item-top">
+          <div class="notif-item-title">${escapeHtml(item.agent || 'Agent')} submitted a reflection</div>
+          <div class="notif-item-meta">${fmtDate(item.ticket_date || item.event_at)}</div>
+        </div>
+        <div class="notif-item-meta">Ticket date: ${fmtDate(item.ticket_date)}${item.front_url ? ` · <a class="notif-link" href="${escapeHtml(item.front_url)}" target="_blank" rel="noopener noreferrer">Front link</a>` : ''}</div>
+        <div class="notif-item-actions">
+          <button class="notif-open" data-notif-open="${item.ticket_id}">Open ticket</button>
+        </div>
+      </div>`;
+    }
+
+    return `<div class="notif-item">
+      <div class="notif-item-top">
+        <div class="notif-item-title">${escapeHtml(item.subject || 'New graded ticket')}</div>
+        <div class="notif-item-meta">${fmtDate(item.ticket_date || item.event_at)}</div>
+      </div>
+      <div class="notif-item-meta">Grader: ${escapeHtml(item.grader_name || 'Bot')}${item.front_url ? ` · <a class="notif-link" href="${escapeHtml(item.front_url)}" target="_blank" rel="noopener noreferrer">Front link</a>` : ''}</div>
+      <div class="notif-item-actions">
+        <button class="notif-open" data-notif-open="${item.ticket_id}">Open ticket</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  itemsHost.querySelectorAll('[data-notif-open]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      setNotifMenuOpen(false);
+      openTicketDetail(btn.dataset.notifOpen, { fromNotification: true });
+    });
+  });
+}
+
+async function loadNotifications() {
+  if (!user) {
+    notifications = { count: 0, items: [] };
+    renderNotifications();
+    return;
+  }
+
+  try {
+    const r = await fetch(`${API_BASE}/api/notifications`, {
+      credentials: 'include'
+    });
+    if (!r.ok) throw new Error('Notification load failed');
+    const data = await r.json().catch(() => ({}));
+    notifications = {
+      count: Number(data.count) || 0,
+      items: Array.isArray(data.items) ? data.items : []
+    };
+  } catch (e) {
+    console.error(e);
+    notifications = { count: 0, items: [] };
+  }
+
+  renderNotifications();
 }
 
 async function loadTicketsFromServer() {
@@ -1439,8 +1531,10 @@ async function loadTicketsFromServer() {
   renderQueueFilters();
   renderList();
   renderSubs();
+  renderNewTickets();
   renderMyTickets();
   renderAnalytics();
+  await loadNotifications();
 }
 
 async function loadGradeForTicket(ticketId) {
@@ -1464,6 +1558,7 @@ async function loadGradeForTicket(ticketId) {
 
   g.submitted = !!data.grade.submitted || !!data.grade.id;
   g.grader = data.grade.grader_name || 'Bot';
+  g.graderUserId = data.grade.grader_user_id ?? null;
   g.numerator = metricNumber(data.grade.numerator);
   g.denominator = metricNumber(data.grade.denominator);
   g.totalPercent = metricNumber(data.grade.total_percent);
@@ -1474,6 +1569,10 @@ async function loadGradeForTicket(ticketId) {
   g.category = data.grade.category || '';
   g.brianNotes = data.grade.brian_notes || '';
   g.fixed = data.grade.fixed || 'No';
+  g.reflection = data.grade.reflection_text || '';
+  g.reflectionSubmittedAt = data.grade.reflection_submitted_at || '';
+  g.agentAcknowledgedAt = data.grade.agent_acknowledged_at || '';
+  g.reflectionReadAt = data.grade.reflection_read_at || '';
 
   (data.breakdown || []).forEach(row => {
     g.scores[row.category_id] = row.score;
@@ -1683,6 +1782,7 @@ function switchTab(t) {
   document.getElementById('v' + t)?.classList.add('on');
 
   if (t === 's') { renderSubsFilters(); renderSubs(); }
+  if (t === 'n') { renderNewTickets(); }
   if (t === 'm') { renderMyFilters(); renderMyTickets(); }
   if (t === 'a') renderAnalytics();
   if (t === 'u') loadAdminUsers();
@@ -1909,7 +2009,7 @@ function applyFilters(tickets) {
 function applySubmissionFilters(tickets) {
   return tickets.filter(t => {
     const g = grades[t.id];
-    if (SF.categories.length && !SF.categories.includes(g?.category || '')) return false;
+    if (!analyticsCategoryMatch(t.id, SF.categories)) return false;
     if (SF.inboxes.length && !SF.inboxes.includes(t.inbox || '')) return false;
     if (SF.agents.length && !SF.agents.includes(t.agent || '')) return false;
     if (SF.weeks.length && !SF.weeks.includes(t.week || '')) return false;
@@ -2144,7 +2244,7 @@ function renderSubsFilters() {
   const weeks   = uniq(submitted.map(t => t.week));
   const inboxes = uniq(submitted.map(t => t.inbox));
   const agents  = canSeeAgent ? uniq(submitted.map(t => t.agent)) : [];
-  const cats    = uniq(submitted.map(t => grades[t.id]?.category).filter(Boolean));
+  const cats    = ANALYTICS_CATEGORY_OPTIONS.map(item => ({ value: item.id, label: item.label }));
   const graders = uniq(submitted.map(t => grades[t.id]?.grader).filter(Boolean));
   const checkGroup = (label, key, options, selectedValues) => {
     if (!options.length) return '';
@@ -2152,18 +2252,19 @@ function renderSubsFilters() {
       <span class="hfbar-lbl">${escapeHtml(label)}</span>
       <div class="hfcheck" data-sf-checkgroup="${escapeHtml(key)}">
         ${options.map(option => `<label class="hfcheck-item">
-          <input type="checkbox" value="${escapeHtml(option)}" ${selectedValues.includes(option) ? 'checked' : ''}>
-          <span>${escapeHtml(option)}</span>
+          <input type="checkbox" value="${escapeHtml(option.value)}" ${selectedValues.includes(option.value) ? 'checked' : ''}>
+          <span>${escapeHtml(option.label)}</span>
         </label>`).join('')}
       </div>
     </div>`;
   };
+  const textOptions = values => values.map(value => ({ value, label: value }));
 
   cont.innerHTML = `<div class="hfbar">
     ${checkGroup('Category', 'categories', cats, SF.categories)}
-    ${checkGroup('Inbox', 'inboxes', inboxes, SF.inboxes)}
-    ${canSeeAgent ? checkGroup('Agent', 'agents', agents, SF.agents) : ''}
-    ${checkGroup('Week', 'weeks', weeks, SF.weeks)}
+    ${checkGroup('Inbox', 'inboxes', textOptions(inboxes), SF.inboxes)}
+    ${canSeeAgent ? checkGroup('Agent', 'agents', textOptions(agents), SF.agents) : ''}
+    ${checkGroup('Week', 'weeks', textOptions(weeks), SF.weeks)}
     <div class="hfbar-grp"><span class="hfbar-lbl">cnv_it</span>
       <input type="text" data-sf="convId" value="${escapeHtml(SF.convId)}" placeholder="Search cnv_it"></div>
     <div class="hfbar-grp"><span class="hfbar-lbl">From</span>
@@ -2870,6 +2971,74 @@ function refreshT(id){
   if(!afActive && !below50 && existing){ renderDetail(); return; }
 }
 
+function isNewAgentTicket(ticketId) {
+  const g = grades[ticketId];
+  return user?.role === 'agent' && !!g?.submitted && !g.agentAcknowledgedAt;
+}
+
+function renderNewTickets() {
+  const countEl = document.getElementById('new-count');
+  const thead = document.querySelector('#new-table thead');
+  const tbody = document.querySelector('#new-table tbody');
+  const pagerHost = document.getElementById('new-pager');
+  if (!countEl || !thead || !tbody) return;
+
+  const tickets = TICKETS.filter(t => isNewAgentTicket(t.id));
+  const pageData = paginateItems(tickets, 'newTickets');
+  countEl.textContent = tickets.length ? `${tickets.length} new graded ticket${tickets.length !== 1 ? 's' : ''}` : 'No new graded tickets';
+
+  if (!tickets.length) {
+    thead.innerHTML = '';
+    tbody.innerHTML = `<tr><td colspan="200" style="padding:40px;text-align:center;color:var(--mu)">No new graded tickets</td></tr>`;
+    if (pagerHost) pagerHost.innerHTML = '';
+    return;
+  }
+
+  thead.innerHTML = `<tr>
+    <th>Open</th>
+    <th>Week</th>
+    <th>Ticket date</th>
+    <th>Agent</th>
+    <th>Created Time</th>
+    <th>Inbox</th>
+    <th>cnv_it</th>
+    <th>Front URL</th>
+    <th>Bot's score</th>
+    <th>Andi's score</th>
+    <th>Diff</th>
+    <th>Grader</th>
+    <th>QA Feedback</th>
+    <th>Reflection</th>
+  </tr>`;
+
+  tbody.innerHTML = pageData.items.map(t => {
+    const g = grades[t.id];
+    const aP = pct(agentRaw(t.id), agentDenom(t.id));
+    const bP = pct(botRaw(t), botDenom(t));
+    const diff = aP - bP;
+    const convId = convIdFromFrontUrl(t.frontUrl);
+    const reflection = (g.reflection || '').trim();
+    return `<tr>
+      <td><button class="tdm-open" onclick="openTicketDetail('${t.id}')">Open</button></td>
+      <td>${t.week || weekOf(t.date || t.createdTime)}</td>
+      <td>${fmtDate(t.date || t.createdTime)}</td>
+      <td>${t.agent || ''}</td>
+      <td style="font-size:10px">${t.createdTime || ''}</td>
+      <td>${t.inbox || ''}</td>
+      <td class="cn">${convId || ''}</td>
+      <td style="font-size:10px">${t.frontUrl ? `<a href="${t.frontUrl}" target="_blank" rel="noopener noreferrer">link</a>` : ''}</td>
+      <td><span class="schip" style="background:${bP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${scol(bP)}">${bP}%</span></td>
+      <td><span class="schip" style="background:${aP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${scol(aP)}">${aP}%</span></td>
+      <td class="cn" style="color:${diff > 0 ? 'var(--gr)' : diff < 0 ? 'var(--rd)' : 'var(--mu)'}">${diff > 0 ? '+' : ''}${diff}%</td>
+      <td>${g.grader || 'Bot'}</td>
+      <td class="cc">${g.qaFeedback || ''}</td>
+      <td class="cc">${reflection || (aP < 100 ? 'Pending' : 'Not required')}</td>
+    </tr>`;
+  }).join('');
+
+  renderPager('newTickets', 'new-pager', pageData);
+}
+
 function renderMyTickets() {
   const done = applyFilters(TICKETS.filter(t => grades[t.id]?.submitted));
   const countEl = document.getElementById('my-count');
@@ -2958,6 +3127,94 @@ function renderMyTickets() {
   }).join('');
 }
 
+async function acknowledgeAgentTicket(ticketId) {
+  const r = await fetch(`${API_BASE}/api/tickets/${ticketId}/agent-acknowledge`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error(data.error || 'Could not acknowledge ticket');
+  }
+  return r.json().catch(() => ({}));
+}
+
+async function submitTicketReflection(ticketId, reflection) {
+  const r = await fetch(`${API_BASE}/api/tickets/${ticketId}/reflection`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ reflection })
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error(data.error || 'Could not submit reflection');
+  }
+  return r.json().catch(() => ({}));
+}
+
+async function markTicketReflectionRead(ticketId) {
+  const r = await fetch(`${API_BASE}/api/tickets/${ticketId}/reflection-read`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error(data.error || 'Could not mark reflection as read');
+  }
+  return r.json().catch(() => ({}));
+}
+
+function wireTicketDetailReflection(ticketId, body) {
+  const addBtn = body.querySelector('#ticket-detail-add-reflection');
+  const form = body.querySelector('#ticket-detail-reflection-form');
+  const text = body.querySelector('#ticket-detail-reflection-text');
+  const submitBtn = body.querySelector('#ticket-detail-reflection-submit');
+
+  if (addBtn && form) {
+    addBtn.addEventListener('click', () => {
+      addBtn.style.display = 'none';
+      form.style.display = '';
+      if (text) {
+        text.style.height = 'auto';
+        text.style.height = `${Math.max(text.scrollHeight, 120)}px`;
+        text.focus();
+      }
+    });
+  }
+
+  if (text) {
+    const resize = () => {
+      text.style.height = 'auto';
+      text.style.height = `${Math.max(text.scrollHeight, 120)}px`;
+    };
+    text.addEventListener('input', resize);
+    resize();
+  }
+
+  if (submitBtn && text) {
+    submitBtn.addEventListener('click', async () => {
+      submitBtn.disabled = true;
+      try {
+        const data = await submitTicketReflection(ticketId, text.value);
+        if (grades[String(ticketId)]) {
+          grades[String(ticketId)].reflection = data.reflection_text || text.value.trim();
+          grades[String(ticketId)].reflectionSubmittedAt = data.reflection_submitted_at || new Date().toISOString();
+          grades[String(ticketId)].agentAcknowledgedAt = data.reflection_submitted_at || new Date().toISOString();
+        }
+        closeTicketDetail();
+        await loadTicketsFromServer();
+        switchTab('n');
+        toast('Reflection submitted ✓');
+      } catch (e) {
+        toast(e.message || 'Reflection submit failed', 'err');
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  }
+}
+
 function ticketDetailBody(t, g) {
   const aR = agentRaw(t.id);
   const bR = botRaw(t);
@@ -2968,6 +3225,8 @@ function ticketDetailBody(t, g) {
   const diff = aP - bP;
   const af = isAF(t.id);
   const wk = t.week || weekOf(t.date || t.createdTime);
+  const reflection = String(g.reflection || '').trim();
+  const needsReflection = user?.role === 'agent' && isNewAgentTicket(t.id) && aP < 100 && !reflection;
 
   return `
     <div class="tdm-grid">
@@ -3013,6 +3272,20 @@ function ticketDetailBody(t, g) {
       <div class="tdm-copy">${g.qaFeedback || '—'}</div>
     </div>
     <div class="tdm-sec">
+      <h4>Reflection</h4>
+      ${reflection ? `<div class="tdm-copy">${escapeHtml(reflection)}</div>` : `<div class="tdm-note">${aP < 100 ? 'Reflection is required before this ticket leaves your New Tickets list.' : 'No reflection submitted.'}</div>`}
+      ${needsReflection ? `
+        <div style="margin-top:10px">
+          <button class="tdm-reflect-btn" id="ticket-detail-add-reflection">Add Reflection</button>
+          <div class="tdm-reflect-form" id="ticket-detail-reflection-form" style="display:none;margin-top:10px">
+            <textarea id="ticket-detail-reflection-text" placeholder="Write your reflection here..."></textarea>
+            <div class="tdm-reflect-actions">
+              <button class="tdm-reflect-btn" id="ticket-detail-reflection-submit">Submit</button>
+            </div>
+          </div>
+        </div>` : ''}
+    </div>
+    <div class="tdm-sec">
       <h4>Additional Notes</h4>
       <div class="tdm-cats">
         <div class="tdm-cat"><div class="tdm-cat-top"><div class="tdm-cat-name">Agent's Focus</div></div><div class="tdm-cat-cause">${g.agentFocus || '—'}</div></div>
@@ -3026,9 +3299,12 @@ function ticketDetailBody(t, g) {
 function closeTicketDetail() {
   const modal = document.getElementById('ticket-detail-modal');
   if (modal) modal.style.display = 'none';
+  currentDetailTicketId = null;
+  currentDetailOptions = {};
 }
 
 window.openTicketDetail = async function(ticketId) {
+  const options = arguments[1] || {};
   const t = TICKETS.find(x => String(x.id) === String(ticketId));
   const g = grades[String(ticketId)];
   if (!t || !g) return;
@@ -3039,24 +3315,44 @@ window.openTicketDetail = async function(ticketId) {
   const body = document.getElementById('ticket-detail-body');
   if (!modal || !title || !subtitle || !body) return;
 
+  currentDetailTicketId = String(ticketId);
+  currentDetailOptions = options;
   modal.style.display = 'block';
   title.textContent = t.subject || 'Untitled ticket';
   subtitle.textContent = `${t.agent || '—'}${t.createdTime ? ` · ${t.createdTime}` : ''}${t.inbox ? ` · ${t.inbox}` : ''}`;
-  body.innerHTML = ticketDetailBody(t, g);
+  const renderModalBody = () => {
+    body.innerHTML = ticketDetailBody(t, grades[String(ticketId)]);
+    loadConvImages(body);
+    wireTicketDetailReflection(ticketId, body);
+    document.getElementById('ticket-detail-reload-conv')?.addEventListener('click', async () => {
+      t.conv = [];
+      renderModalBody();
+      await fetchFrontConv(t);
+      renderModalBody();
+    });
+  };
+  renderModalBody();
 
   if (t.frontUrl && !(t.conv && t.conv.length)) {
     await fetchFrontConv(t);
-    body.innerHTML = ticketDetailBody(t, g);
+    renderModalBody();
   }
 
-  loadConvImages(body);
-  document.getElementById('ticket-detail-reload-conv')?.addEventListener('click', async () => {
-    t.conv = [];
-    body.innerHTML = ticketDetailBody(t, g);
-    await fetchFrontConv(t);
-    body.innerHTML = ticketDetailBody(t, g);
-    loadConvImages(body);
-  });
+  try {
+    if (user?.role === 'agent' && isNewAgentTicket(ticketId) && generalPercent(ticketId) >= 100) {
+      const data = await acknowledgeAgentTicket(ticketId);
+      grades[String(ticketId)].agentAcknowledgedAt = data.agent_acknowledged_at || new Date().toISOString();
+      renderNewTickets();
+      await loadNotifications();
+    }
+    if (user?.role !== 'agent' && grades[String(ticketId)]?.reflectionSubmittedAt && !grades[String(ticketId)]?.reflectionReadAt) {
+      const data = await markTicketReflectionRead(ticketId);
+      grades[String(ticketId)].reflectionReadAt = data.reflection_read_at || new Date().toISOString();
+      await loadNotifications();
+    }
+  } catch (e) {
+    console.error(e);
+  }
 };
 
 function renderSubs(){
@@ -3101,6 +3397,7 @@ function renderSubs(){
     <th>Post Bug Esc</th>
     <th>Post Bug Esc Cause</th>
     <th>QA Feedback</th>
+    <th>Reflection</th>
     <th>Actions</th>
   </tr>`;
 
@@ -3147,6 +3444,7 @@ function renderSubs(){
       <td>${isNA(g.af.post_bug) ? 'NA' : g.af.post_bug}</td>
       <td class="cc">${finalAFCause(g, 'post_bug')}</td>
       <td class="cc">${g.qaFeedback || ''}</td>
+      <td class="cc">${g.reflection || ''}</td>
       <td>${['admin','cs_leader'].includes(user?.role) ? `<button class="bsm" onclick="deleteTicketFromTable('${t.id}')">Delete</button>` : ''}</td>
     </tr>`;
   }).join('');
@@ -3530,7 +3828,8 @@ function submissionsExportColumns() {
     'Bug Escalation Cause',
     'Post Bug Escalation',
     'Post Bug Escalation Cause',
-    'QA Feedback'
+    'QA Feedback',
+    'Reflection'
   ];
 }
 
@@ -3599,7 +3898,8 @@ function submissionExportRow(t) {
     ag ? finalAFCause(g, 'bug_esc') : '',
     ag ? g.af.post_bug : '',
     ag ? finalAFCause(g, 'post_bug') : '',
-    ag ? g.qaFeedback : ''
+    ag ? g.qaFeedback : '',
+    ag ? (g.reflection || '') : ''
   ];
 }
 
@@ -3773,6 +4073,8 @@ const exportCsvBtn = document.getElementById('export-csv-btn');
 const exportSubmissionsExcelBtn = document.getElementById('export-submissions-excel-btn');
 const exportAnalyticsExcelBtn = document.getElementById('export-analytics-excel-btn');
 const exportAnalyticsPdfBtn = document.getElementById('export-analytics-pdf-btn');
+const notifMenu = document.getElementById('notif-menu');
+const notifToggle = document.getElementById('notif-toggle');
 
 function setExportMenuOpen(open) {
   if (!exportMenu) return;
@@ -3780,9 +4082,16 @@ function setExportMenuOpen(open) {
   if (exportMenuToggle) exportMenuToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
 
+function setNotifMenuOpen(open) {
+  if (!notifMenu) return;
+  notifMenu.classList.toggle('open', !!open);
+  if (notifToggle) notifToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
 if (exportMenu && exportMenuToggle) {
   exportMenuToggle.addEventListener('click', e => {
     e.stopPropagation();
+    setNotifMenuOpen(false);
     setExportMenuOpen(!exportMenu.classList.contains('open'));
   });
 
@@ -3792,10 +4101,26 @@ if (exportMenu && exportMenuToggle) {
 
   document.addEventListener('click', () => {
     setExportMenuOpen(false);
+    setNotifMenuOpen(false);
   });
 
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') setExportMenuOpen(false);
+    if (e.key === 'Escape') {
+      setExportMenuOpen(false);
+      setNotifMenuOpen(false);
+    }
+  });
+}
+
+if (notifMenu && notifToggle) {
+  notifToggle.addEventListener('click', e => {
+    e.stopPropagation();
+    setExportMenuOpen(false);
+    setNotifMenuOpen(!notifMenu.classList.contains('open'));
+  });
+
+  notifMenu.addEventListener('click', e => {
+    e.stopPropagation();
   });
 }
 
