@@ -66,6 +66,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '200mb' }));
 
 app.use(session({
+  proxy: true,
   store: new PgStore({
     pool,
     tableName: 'session',
@@ -743,7 +744,14 @@ app.post('/api/auth/login', async (req, res) => {
       role: user.role
     };
 
-    res.json({ ok: true, user: req.session.user });
+    req.session.save((saveError) => {
+      if (saveError) {
+        console.error(saveError);
+        return res.status(500).json({ error: 'Failed to persist session' });
+      }
+
+      res.json({ ok: true, user: req.session.user });
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
