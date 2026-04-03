@@ -230,7 +230,21 @@ function parseMultiQuery(value) {
     .filter(Boolean);
 }
 
-function buildAnalyticsFilters(query = {}) {
+function normalizeAgentIdentity(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return '';
+  if (raw === 'ed' || raw === 'ednalyn.c') return 'ednalyn.c';
+
+  const [localPart, domain] = raw.split('@');
+  if (localPart && ['usemotion.com', 'wonderly.com'].includes(domain)) {
+    return localPart;
+  }
+
+  return raw;
+}
+
+function buildAnalyticsFilters(query = {}, options = {}) {
+  const { scopedAgentKey = '' } = options;
   const { grader = '', week = '', month = '', dateFrom = '', dateTo = '' } = query;
   const agents = parseMultiQuery(query.agent);
   const excludedAgents = parseMultiQuery(query.excludeAgent);
@@ -246,6 +260,10 @@ function buildAnalyticsFilters(query = {}) {
   if (grader) {
     params.push(grader);
     where.push(`g.grader_name = $${params.length}`);
+  }
+  if (scopedAgentKey) {
+    params.push(scopedAgentKey);
+    where.push(`${AGENT_KEY_SQL} = $${params.length}`);
   }
   if (agents.length) {
     params.push(agents);
@@ -1014,7 +1032,23 @@ app.get('/api/analytics/agents', requireAuth, async (req, res) => {
 
 app.get('/api/analytics/rankings', requireAuth, async (req, res) => {
   try {
+    const summaryScopedAgentKey = req.session.user?.role === 'agent'
+      ? normalizeAgentIdentity(req.session.user.email || req.session.user.username)
+      : '';
+
+    const filteredSummaryFilters = buildAnalyticsFilters(req.query, {
+      scopedAgentKey: summaryScopedAgentKey
+    });
     const filteredFilters = buildAnalyticsFilters(req.query);
+    const allTimeSummaryFilters = buildAnalyticsFilters({
+      ...req.query,
+      week: '',
+      month: '',
+      dateFrom: '',
+      dateTo: ''
+    }, {
+      scopedAgentKey: summaryScopedAgentKey
+    });
     const allTimeFilters = buildAnalyticsFilters({
       ...req.query,
       week: '',
@@ -1024,7 +1058,7 @@ app.get('/api/analytics/rankings', requireAuth, async (req, res) => {
     });
 
     const filteredSummary = await pool.query(
-      `${analyticsBaseSql(filteredFilters.whereSql)}
+      `${analyticsBaseSql(filteredSummaryFilters.whereSql)}
        SELECT
          COUNT(*)::int AS total_tickets,
          COUNT(*) FILTER (WHERE is_human_graded)::int AS grader_ticket_count,
@@ -1035,7 +1069,7 @@ app.get('/api/analytics/rankings', requireAuth, async (req, res) => {
          ROUND(AVG(ABS(grader_percent - bot_percent)) FILTER (WHERE is_human_graded AND bot_percent IS NOT NULL))::int AS avg_diff,
          COUNT(*) FILTER (WHERE is_human_graded AND grader_percent = 0)::int AS grader_autofails
        FROM base`,
-      filteredFilters.params
+      filteredSummaryFilters.params
     );
 
     const filteredGeneralAgents = await pool.query(
@@ -1162,7 +1196,7 @@ app.get('/api/analytics/rankings', requireAuth, async (req, res) => {
     );
 
     const allTimeSummary = await pool.query(
-      `${analyticsBaseSql(allTimeFilters.whereSql)}
+      `${analyticsBaseSql(allTimeSummaryFilters.whereSql)}
        SELECT
          COUNT(*)::int AS total_tickets,
          COUNT(*) FILTER (WHERE is_human_graded)::int AS grader_ticket_count,
@@ -1173,7 +1207,7 @@ app.get('/api/analytics/rankings', requireAuth, async (req, res) => {
          ROUND(AVG(ABS(grader_percent - bot_percent)) FILTER (WHERE is_human_graded AND bot_percent IS NOT NULL))::int AS avg_diff,
          COUNT(*) FILTER (WHERE is_human_graded AND grader_percent = 0)::int AS grader_autofails
        FROM base`,
-      allTimeFilters.params
+      allTimeSummaryFilters.params
     );
 
     const allTimeGeneralAgents = await pool.query(

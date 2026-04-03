@@ -3007,12 +3007,32 @@ async function renderAnalytics(){
   });
   charts = {};
 
+  const mapRankRows = rows => Array.isArray(rows) ? rows.map(r => ({
+    week: r.week || '',
+    ag: r.agent || 'Unknown',
+    n: Number(r.ticket_count) || 0,
+    aA: Number(r.avg_score) || 0,
+    rank: Number(r.rank) || 0
+  })) : [];
+  const renderAllTimeRankingTable = (tableId, rows, emptyLabel) => {
+    const table = document.getElementById(tableId);
+    if (!table) return;
+
+    table.innerHTML = `<thead><tr><th>Agent</th><th>Avg score %</th><th>Tickets</th><th>Rank</th></tr></thead><tbody>${rows.map(r => {
+      const col = scol(r.aA);
+      return `<tr><td style="font-family:var(--mo);font-size:11px">${r.ag}</td><td><div class="barwrap"><div class="barbg"><div class="barfill" style="width:${r.aA}%;background:${col}"></div></div><span style="font-family:var(--mo);font-size:11px;color:${col};min-width:36px">${r.aA}%</span></div></td><td style="color:var(--mu)">${r.n}</td><td><span class="dpill dp-z">#${r.rank}</span></td></tr>`;
+    }).join('') || `<tr><td colspan="4" style="color:var(--mu);padding:16px">${emptyLabel}</td></tr>`}</tbody>`;
+  };
+
   let filteredSummary = {};
+  let filteredGeneralRows = [];
   let filteredGraderRows = [];
   let filteredBotRows = [];
+  let weeklyGeneralRows = [];
   let weeklyGraderRows = [];
   let weeklyBotRows = [];
   let allTimeSummary = {};
+  let allTimeGeneralRows = [];
   let allTimeGraderRows = [];
   let allTimeBotRows = [];
 
@@ -3023,56 +3043,33 @@ async function renderAnalytics(){
     if (resp.ok) {
       const data = await resp.json();
       filteredSummary = data.filtered_summary || {};
-      filteredGraderRows = Array.isArray(data.filtered_grader_agents) ? data.filtered_grader_agents.map(r => ({
-        ag: r.agent || 'Unknown',
-        n: Number(r.ticket_count) || 0,
-        aA: Number(r.avg_score) || 0,
-        rank: Number(r.rank) || 0
-      })) : [];
-      filteredBotRows = Array.isArray(data.filtered_bot_agents) ? data.filtered_bot_agents.map(r => ({
-        ag: r.agent || 'Unknown',
-        n: Number(r.ticket_count) || 0,
-        aA: Number(r.avg_score) || 0,
-        rank: Number(r.rank) || 0
-      })) : [];
-      weeklyGraderRows = Array.isArray(data.weekly_grader_ranks) ? data.weekly_grader_ranks.map(r => ({
-        week: r.week || '',
-        ag: r.agent || 'Unknown',
-        n: Number(r.ticket_count) || 0,
-        aA: Number(r.avg_score) || 0,
-        rank: Number(r.rank) || 0
-      })) : [];
-      weeklyBotRows = Array.isArray(data.weekly_bot_ranks) ? data.weekly_bot_ranks.map(r => ({
-        week: r.week || '',
-        ag: r.agent || 'Unknown',
-        n: Number(r.ticket_count) || 0,
-        aA: Number(r.avg_score) || 0,
-        rank: Number(r.rank) || 0
-      })) : [];
+      filteredGeneralRows = mapRankRows(data.filtered_general_agents);
+      filteredGraderRows = mapRankRows(data.filtered_grader_agents);
+      filteredBotRows = mapRankRows(data.filtered_bot_agents);
+      weeklyGeneralRows = mapRankRows(data.weekly_general_ranks);
+      weeklyGraderRows = mapRankRows(data.weekly_grader_ranks);
+      weeklyBotRows = mapRankRows(data.weekly_bot_ranks);
       allTimeSummary = data.all_time_summary || {};
-      allTimeGraderRows = Array.isArray(data.all_time_grader_agents) ? data.all_time_grader_agents.map(r => ({
-        ag: r.agent || 'Unknown',
-        n: Number(r.ticket_count) || 0,
-        aA: Number(r.avg_score) || 0,
-        rank: Number(r.rank) || 0
-      })) : [];
-      allTimeBotRows = Array.isArray(data.all_time_bot_agents) ? data.all_time_bot_agents.map(r => ({
-        ag: r.agent || 'Unknown',
-        n: Number(r.ticket_count) || 0,
-        aA: Number(r.avg_score) || 0,
-        rank: Number(r.rank) || 0
-      })) : [];
+      allTimeGeneralRows = mapRankRows(data.all_time_general_agents);
+      allTimeGraderRows = mapRankRows(data.all_time_grader_agents);
+      allTimeBotRows = mapRankRows(data.all_time_bot_agents);
     }
   } catch (e) {
     console.error('Analytics ranking load failed:', e);
   }
 
   const currentAgentKey = normalizeAgentIdentity(user?.email || user?.name);
+  const myFilteredGeneralRank = user?.role === 'agent'
+    ? (filteredGeneralRows.find(r => normalizeAgentIdentity(r.ag) === currentAgentKey)?.rank || 0)
+    : 0;
   const myFilteredGraderRank = user?.role === 'agent'
     ? (filteredGraderRows.find(r => normalizeAgentIdentity(r.ag) === currentAgentKey)?.rank || 0)
     : 0;
   const myFilteredBotRank = user?.role === 'agent'
     ? (filteredBotRows.find(r => normalizeAgentIdentity(r.ag) === currentAgentKey)?.rank || 0)
+    : 0;
+  const myAllTimeGeneralRank = user?.role === 'agent'
+    ? (allTimeGeneralRows.find(r => normalizeAgentIdentity(r.ag) === currentAgentKey)?.rank || 0)
     : 0;
   const myAllTimeGraderRank = user?.role === 'agent'
     ? (allTimeGraderRows.find(r => normalizeAgentIdentity(r.ag) === currentAgentKey)?.rank || 0)
@@ -3081,12 +3078,18 @@ async function renderAnalytics(){
     ? (allTimeBotRows.find(r => normalizeAgentIdentity(r.ag) === currentAgentKey)?.rank || 0)
     : 0;
 
+  const filteredGeneralRankLabel = user?.role === 'agent'
+    ? (myFilteredGeneralRank > 0 ? `#${myFilteredGeneralRank}` : '—')
+    : `${filteredGeneralRows.length}`;
   const filteredGraderRankLabel = user?.role === 'agent'
     ? (myFilteredGraderRank > 0 ? `#${myFilteredGraderRank}` : '—')
     : `${filteredGraderRows.length}`;
   const filteredBotRankLabel = user?.role === 'agent'
     ? (myFilteredBotRank > 0 ? `#${myFilteredBotRank}` : '—')
     : `${filteredBotRows.length}`;
+  const allTimeGeneralRankLabel = user?.role === 'agent'
+    ? (myAllTimeGeneralRank > 0 ? `#${myAllTimeGeneralRank}` : '—')
+    : `${allTimeGeneralRows.length}`;
   const allTimeGraderRankLabel = user?.role === 'agent'
     ? (myAllTimeGraderRank > 0 ? `#${myAllTimeGraderRank}` : '—')
     : `${allTimeGraderRows.length}`;
@@ -3096,10 +3099,15 @@ async function renderAnalytics(){
 
   const filteredTicketCount = Number(filteredSummary.total_tickets) || 0;
   const filteredGraderCount = Number(filteredSummary.grader_ticket_count) || 0;
+  const filteredGeneralCount = Number(filteredSummary.general_ticket_count) || filteredTicketCount;
+  const avgGeneralScore = Number(filteredSummary.avg_general_score) || 0;
   const avgGraderScore = Number(filteredSummary.avg_grader_score) || 0;
   const avgBotScore = Number(filteredSummary.avg_bot_score) || 0;
   const avgDiff = Number(filteredSummary.avg_diff) || 0;
   const allTimeTicketCount = Number(allTimeSummary.total_tickets) || 0;
+  const allTimeGraderCount = Number(allTimeSummary.grader_ticket_count) || 0;
+  const allTimeGeneralCount = Number(allTimeSummary.general_ticket_count) || allTimeTicketCount;
+  const allTimeAvgGeneralScore = Number(allTimeSummary.avg_general_score) || 0;
   const allTimeAvgGraderScore = Number(allTimeSummary.avg_grader_score) || 0;
   const allTimeAvgBotScore = Number(allTimeSummary.avg_bot_score) || 0;
   const allTimeAvgDiff = Number(allTimeSummary.avg_diff) || 0;
@@ -3107,23 +3115,29 @@ async function renderAnalytics(){
   cont.innerHTML = `${renderAnalyticsFilters(allDone)}
   ${analyticsActiveChips()}
   ${!done.length ? `<div class="an-empty"><div class="empty-ic">📊</div><p>No analytics match the current filters.</p></div>` : `<div class="kpis">
+    <div class="kpi"><div class="kv" style="color:#0ea5a4">${avgGeneralScore}%</div><div class="kl">Avg general score</div><div class="ks">grader + bot, ${filteredGeneralCount} filtered tickets</div></div>
     <div class="kpi"><div class="kv" style="color:#1ec97a">${filteredTicketCount}</div><div class="kl">Filtered tickets</div><div class="ks">${filteredGraderCount} graded by grader</div></div>
     <div class="kpi"><div class="kv" style="color:#4f7cff">${avgGraderScore}%</div><div class="kl">Avg grader score</div><div class="ks">human-graded only</div></div>
     <div class="kpi"><div class="kv" style="color:#9d7df0">${avgBotScore}%</div><div class="kl">Avg bot score</div><div class="ks">all filtered tickets</div></div>
-    <div class="kpi"><div class="kv" style="color:${avgDiff >= 0 ? '#1ec97a' : '#f04e4e'}">${avgDiff >= 0 ? '+' : ''}${avgDiff}%</div><div class="kl">Avg diff</div><div class="ks">grader minus bot</div></div>
+    <div class="kpi"><div class="kv" style="color:#f0a020">${avgDiff}%</div><div class="kl">Avg score gap</div><div class="ks">higher score minus lower score</div></div>
+    <div class="kpi"><div class="kv" style="color:#0ea5a4">${filteredGeneralRankLabel}</div><div class="kl">Filtered general rank</div><div class="ks">among ${filteredGeneralRows.length || 0}</div></div>
     <div class="kpi"><div class="kv" style="color:#f0a020">${filteredGraderRankLabel}</div><div class="kl">Filtered grader rank</div><div class="ks">among ${filteredGraderRows.length || 0}</div></div>
     <div class="kpi"><div class="kv" style="color:#1ec97a">${filteredBotRankLabel}</div><div class="kl">Filtered bot rank</div><div class="ks">among ${filteredBotRows.length || 0}</div></div>
-    <div class="kpi"><div class="kv" style="color:#4f7cff">${allTimeAvgGraderScore}%</div><div class="kl">All-time grader avg</div><div class="ks">${allTimeTicketCount} tickets total</div></div>
+    <div class="kpi"><div class="kv" style="color:#0ea5a4">${allTimeAvgGeneralScore}%</div><div class="kl">All-time general avg</div><div class="ks">grader + bot, ${allTimeGeneralCount} tickets</div></div>
+    <div class="kpi"><div class="kv" style="color:#4f7cff">${allTimeAvgGraderScore}%</div><div class="kl">All-time grader avg</div><div class="ks">${allTimeGraderCount} human-graded tickets</div></div>
     <div class="kpi"><div class="kv" style="color:#9d7df0">${allTimeAvgBotScore}%</div><div class="kl">All-time bot avg</div><div class="ks">all submitted tickets</div></div>
-    <div class="kpi"><div class="kv" style="color:${allTimeAvgDiff >= 0 ? '#1ec97a' : '#f04e4e'}">${allTimeAvgDiff >= 0 ? '+' : ''}${allTimeAvgDiff}%</div><div class="kl">All-time diff</div><div class="ks">grader minus bot</div></div>
+    <div class="kpi"><div class="kv" style="color:#f0a020">${allTimeAvgDiff}%</div><div class="kl">All-time score gap</div><div class="ks">higher score minus lower score</div></div>
+    <div class="kpi"><div class="kv" style="color:#0ea5a4">${allTimeGeneralRankLabel}</div><div class="kl">All-time general rank</div><div class="ks">among ${allTimeGeneralRows.length || 0}</div></div>
     <div class="kpi"><div class="kv" style="color:#f0a020">${allTimeGraderRankLabel}</div><div class="kl">All-time grader rank</div><div class="ks">among ${allTimeGraderRows.length || 0}</div></div>
     <div class="kpi"><div class="kv" style="color:#1ec97a">${allTimeBotRankLabel}</div><div class="kl">All-time bot rank</div><div class="ks">among ${allTimeBotRows.length || 0}</div></div>
   </div>
   <div class="cgrid">
+    <div class="ccard wide"><div class="ctitle">Weekly Ranking By General Score</div><div class="rank-scroll"><table class="atbl" id="atbl-general"></table></div></div>
     <div class="ccard"><div class="ctitle">Criteria avg — Grader vs Bot</div><div class="cwrap tall"><canvas id="ch-crit"></canvas></div></div>
     <div class="ccard"><div class="ctitle">Grader score distribution</div><div class="cwrap tall"><canvas id="ch-dist"></canvas></div></div>
     <div class="ccard wide"><div class="ctitle">Weekly Ranking By Grader</div><div class="rank-scroll"><table class="atbl" id="atbl-grader"></table></div></div>
     <div class="ccard wide"><div class="ctitle">Weekly Ranking By Bot</div><div class="rank-scroll"><table class="atbl" id="atbl-bot"></table></div></div>
+    <div class="ccard wide"><div class="ctitle">All-Time Ranking By General Score</div><div class="rank-scroll"><table class="atbl" id="atbl-all-general"></table></div></div>
     <div class="ccard wide"><div class="ctitle">All-Time Ranking By Grader</div><div class="rank-scroll"><table class="atbl" id="atbl-all-grader"></table></div></div>
     <div class="ccard wide"><div class="ctitle">All-Time Ranking By Bot</div><div class="rank-scroll"><table class="atbl" id="atbl-all-bot"></table></div></div>
   </div>`}`;
@@ -3214,18 +3228,13 @@ async function renderAnalytics(){
     }
   });
 
+  renderWeeklyRankingMatrix('atbl-general', weeklyGeneralRows, filteredGeneralRows, 'No general-score ranking data for the current filters.');
   renderWeeklyRankingMatrix('atbl-grader', weeklyGraderRows, filteredGraderRows, 'No grader ranking data for the current filters.');
   renderWeeklyRankingMatrix('atbl-bot', weeklyBotRows, filteredBotRows, 'No bot ranking data for the current filters.');
 
-  document.getElementById('atbl-all-grader').innerHTML = `<thead><tr><th>Agent</th><th>Avg score %</th><th>Tickets</th><th>Rank</th></tr></thead><tbody>${allTimeGraderRows.map(r => {
-    const col = scol(r.aA);
-    return `<tr><td style="font-family:var(--mo);font-size:11px">${r.ag}</td><td><div class="barwrap"><div class="barbg"><div class="barfill" style="width:${r.aA}%;background:${col}"></div></div><span style="font-family:var(--mo);font-size:11px;color:${col};min-width:36px">${r.aA}%</span></div></td><td style="color:var(--mu)">${r.n}</td><td><span class="dpill dp-z">#${r.rank}</span></td></tr>`;
-  }).join('') || `<tr><td colspan="4" style="color:var(--mu);padding:16px">No all-time grader ranking data.</td></tr>`}</tbody>`;
-
-  document.getElementById('atbl-all-bot').innerHTML = `<thead><tr><th>Agent</th><th>Avg score %</th><th>Tickets</th><th>Rank</th></tr></thead><tbody>${allTimeBotRows.map(r => {
-    const col = scol(r.aA);
-    return `<tr><td style="font-family:var(--mo);font-size:11px">${r.ag}</td><td><div class="barwrap"><div class="barbg"><div class="barfill" style="width:${r.aA}%;background:${col}"></div></div><span style="font-family:var(--mo);font-size:11px;color:${col};min-width:36px">${r.aA}%</span></div></td><td style="color:var(--mu)">${r.n}</td><td><span class="dpill dp-z">#${r.rank}</span></td></tr>`;
-  }).join('') || `<tr><td colspan="4" style="color:var(--mu);padding:16px">No all-time bot ranking data.</td></tr>`}</tbody>`;
+  renderAllTimeRankingTable('atbl-all-general', allTimeGeneralRows, 'No all-time general-score ranking data.');
+  renderAllTimeRankingTable('atbl-all-grader', allTimeGraderRows, 'No all-time grader ranking data.');
+  renderAllTimeRankingTable('atbl-all-bot', allTimeBotRows, 'No all-time bot ranking data.');
 }
 
 function ticketDateFromCreatedTime(createdTime) {
@@ -3339,8 +3348,10 @@ async function buildAnalyticsReportHtml() {
   const critChart = document.getElementById('ch-crit')?.toDataURL('image/png') || '';
   const distChart = document.getElementById('ch-dist')?.toDataURL('image/png') || '';
   const sections = [
+    { title: 'Weekly Ranking By General Score', id: 'atbl-general' },
     { title: 'Weekly Ranking By Grader', id: 'atbl-grader' },
     { title: 'Weekly Ranking By Bot', id: 'atbl-bot' },
+    { title: 'All-Time Ranking By General Score', id: 'atbl-all-general' },
     { title: 'All-Time Ranking By Grader', id: 'atbl-all-grader' },
     { title: 'All-Time Ranking By Bot', id: 'atbl-all-bot' }
   ];

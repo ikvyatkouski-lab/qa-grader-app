@@ -2775,7 +2775,7 @@ function renderMyTickets() {
       <td><span class="schip" style="background:${bP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${scol(bP)}">${bP}%</span></td>
       <td class="cn">${aD}</td>
       <td class="cn">${aR}</td>
-      <td><span class="schip" style="background:${af ? 'var(--rds)' : aP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${af ? 'var(--rd)' : scol(aP)}">${af ? '0% ⛔' : aP + '%'}</span></td>
+      <td><span class="schip" style="background:${af ? 'var(--rds)' : aP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${af ? 'var(--rd)' : scol(aP)}">${af ? '0%' : aP + '%'}</span></td>
       <td class="cn" style="color:${diff > 0 ? 'var(--gr)' : diff < 0 ? 'var(--rd)' : 'var(--mu)'}">${diff > 0 ? '+' : ''}${diff}%</td>
       <td>${g.grader || user?.name || 'Bot'}</td>
       ${C.map(c => {
@@ -2969,7 +2969,7 @@ function renderSubs(){
       <td><span class="schip" style="background:${bP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${scol(bP)}">${bP}%</span></td>
       <td class="cn">${aD}</td>
       <td class="cn">${aR}</td>
-      <td><span class="schip" style="background:${af ? 'var(--rds)' : aP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${af ? 'var(--rd)' : scol(aP)}">${af ? '0% ⛔' : aP + '%'}</span></td>
+      <td><span class="schip" style="background:${af ? 'var(--rds)' : aP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${af ? 'var(--rd)' : scol(aP)}">${af ? '0%' : aP + '%'}</span></td>
       <td class="cn" style="color:${diff > 0 ? 'var(--gr)' : diff < 0 ? 'var(--rd)' : 'var(--mu)'}">${diff > 0 ? '+' : ''}${diff}%</td>
       <td>${g.grader || user?.name || 'Bot'}</td>
       ${C.map(c => {
