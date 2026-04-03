@@ -3058,26 +3058,6 @@ async function renderAnalytics(){
     console.error('Analytics ranking load failed:', e);
   }
 
-  const currentAgentKey = normalizeAgentIdentity(user?.email || user?.name);
-  const myAllTimeGeneralRank = user?.role === 'agent'
-    ? (allTimeGeneralRows.find(r => normalizeAgentIdentity(r.ag) === currentAgentKey)?.rank || 0)
-    : 0;
-  const myAllTimeGraderRank = user?.role === 'agent'
-    ? (allTimeGraderRows.find(r => normalizeAgentIdentity(r.ag) === currentAgentKey)?.rank || 0)
-    : 0;
-  const myAllTimeBotRank = user?.role === 'agent'
-    ? (allTimeBotRows.find(r => normalizeAgentIdentity(r.ag) === currentAgentKey)?.rank || 0)
-    : 0;
-  const allTimeGeneralRankLabel = user?.role === 'agent'
-    ? (myAllTimeGeneralRank > 0 ? `#${myAllTimeGeneralRank}` : '—')
-    : `${allTimeGeneralRows.length}`;
-  const allTimeGraderRankLabel = user?.role === 'agent'
-    ? (myAllTimeGraderRank > 0 ? `#${myAllTimeGraderRank}` : '—')
-    : `${allTimeGraderRows.length}`;
-  const allTimeBotRankLabel = user?.role === 'agent'
-    ? (myAllTimeBotRank > 0 ? `#${myAllTimeBotRank}` : '—')
-    : `${allTimeBotRows.length}`;
-
   const filteredTicketCount = Number(filteredSummary.total_tickets) || 0;
   const filteredGraderCount = Number(filteredSummary.grader_ticket_count) || 0;
   const filteredGeneralCount = Number(filteredSummary.general_ticket_count) || filteredTicketCount;
@@ -3101,17 +3081,14 @@ async function renderAnalytics(){
     <div class="kpi"><div class="kv" style="color:#1ec97a">${filteredTicketCount}</div><div class="kl">Filtered tickets</div><div class="ks">${filteredGraderCount} graded by grader</div></div>
     <div class="kpi"><div class="kv" style="color:#4f7cff">${avgGraderScore}%</div><div class="kl">Avg grader score</div><div class="ks">human-graded only</div></div>
     <div class="kpi"><div class="kv" style="color:#9d7df0">${avgBotScore}%</div><div class="kl">Avg bot score</div><div class="ks">all filtered tickets</div></div>
-    <div class="kpi"><div class="kv" style="color:#f0a020">${avgDiff}%</div><div class="kl">Avg score gap</div><div class="ks">higher score minus lower score</div></div>
+    <div class="kpi"><div class="kv" style="color:#f0a020">${avgDiff}%</div><div class="kl">Avg score gap</div><div class="ks">Andi's score vs bot score</div></div>
   </div>
   <div class="kpi-section-label">All-time</div>
   <div class="kpis">
     <div class="kpi"><div class="kv" style="color:#0ea5a4">${allTimeAvgGeneralScore}%</div><div class="kl">General avg</div><div class="ks">Andi's score, ${allTimeGeneralCount} tickets</div></div>
     <div class="kpi"><div class="kv" style="color:#4f7cff">${allTimeAvgGraderScore}%</div><div class="kl">Grader avg</div><div class="ks">${allTimeGraderCount} human-graded tickets</div></div>
     <div class="kpi"><div class="kv" style="color:#9d7df0">${allTimeAvgBotScore}%</div><div class="kl">Bot avg</div><div class="ks">all submitted tickets</div></div>
-    <div class="kpi"><div class="kv" style="color:#f0a020">${allTimeAvgDiff}%</div><div class="kl">Score gap</div><div class="ks">higher score minus lower score</div></div>
-    <div class="kpi"><div class="kv" style="color:#0ea5a4">${allTimeGeneralRankLabel}</div><div class="kl">General rank</div><div class="ks">among ${allTimeGeneralRows.length || 0}</div></div>
-    <div class="kpi"><div class="kv" style="color:#f0a020">${allTimeGraderRankLabel}</div><div class="kl">Grader rank</div><div class="ks">among ${allTimeGraderRows.length || 0}</div></div>
-    <div class="kpi"><div class="kv" style="color:#1ec97a">${allTimeBotRankLabel}</div><div class="kl">Bot rank</div><div class="ks">among ${allTimeBotRows.length || 0}</div></div>
+    <div class="kpi"><div class="kv" style="color:#f0a020">${allTimeAvgDiff}%</div><div class="kl">Score gap</div><div class="ks">Andi's score vs bot score</div></div>
   </div>
   <div class="cgrid">
     <div class="ccard wide"><div class="ctitle">Weekly Ranking By General Score</div><div class="rank-scroll"><table class="atbl" id="atbl-general"></table></div></div>
@@ -3119,9 +3096,6 @@ async function renderAnalytics(){
     <div class="ccard"><div class="ctitle">Grader score distribution</div><div class="cwrap tall"><canvas id="ch-dist"></canvas></div></div>
     <div class="ccard wide"><div class="ctitle">Weekly Ranking By Grader</div><div class="rank-scroll"><table class="atbl" id="atbl-grader"></table></div></div>
     <div class="ccard wide"><div class="ctitle">Weekly Ranking By Bot</div><div class="rank-scroll"><table class="atbl" id="atbl-bot"></table></div></div>
-    <div class="ccard wide"><div class="ctitle">All-Time Ranking By General Score</div><div class="rank-scroll"><table class="atbl" id="atbl-all-general"></table></div></div>
-    <div class="ccard wide"><div class="ctitle">All-Time Ranking By Grader</div><div class="rank-scroll"><table class="atbl" id="atbl-all-grader"></table></div></div>
-    <div class="ccard wide"><div class="ctitle">All-Time Ranking By Bot</div><div class="rank-scroll"><table class="atbl" id="atbl-all-bot"></table></div></div>
   </div>`}`;
 
   cont.querySelectorAll('[data-af]').forEach(el => {
@@ -3213,10 +3187,6 @@ async function renderAnalytics(){
   renderWeeklyRankingMatrix('atbl-general', weeklyGeneralRows, filteredGeneralRows, 'No general-score ranking data for the current filters.');
   renderWeeklyRankingMatrix('atbl-grader', weeklyGraderRows, filteredGraderRows, 'No grader ranking data for the current filters.');
   renderWeeklyRankingMatrix('atbl-bot', weeklyBotRows, filteredBotRows, 'No bot ranking data for the current filters.');
-
-  renderAllTimeRankingTable('atbl-all-general', allTimeGeneralRows, 'No all-time general-score ranking data.');
-  renderAllTimeRankingTable('atbl-all-grader', allTimeGraderRows, 'No all-time grader ranking data.');
-  renderAllTimeRankingTable('atbl-all-bot', allTimeBotRows, 'No all-time bot ranking data.');
 }
 
 function ticketDateFromCreatedTime(createdTime) {
@@ -3332,10 +3302,7 @@ async function buildAnalyticsReportHtml() {
   const sections = [
     { title: 'Weekly Ranking By General Score', id: 'atbl-general' },
     { title: 'Weekly Ranking By Grader', id: 'atbl-grader' },
-    { title: 'Weekly Ranking By Bot', id: 'atbl-bot' },
-    { title: 'All-Time Ranking By General Score', id: 'atbl-all-general' },
-    { title: 'All-Time Ranking By Grader', id: 'atbl-all-grader' },
-    { title: 'All-Time Ranking By Bot', id: 'atbl-all-bot' }
+    { title: 'Weekly Ranking By Bot', id: 'atbl-bot' }
   ];
 
   return `<!DOCTYPE html>

@@ -160,7 +160,16 @@ const BOT_PERCENT_SQL = `COALESCE(
 )`;
 
 const HUMAN_GRADE_SQL = `LOWER(BTRIM(COALESCE(NULLIF(g.grader_name, ''), NULLIF(g.grader_type, ''), 'bot'))) <> 'bot'`;
-const GENERAL_PERCENT_SQL = `g.total_percent::numeric`;
+const GENERAL_PERCENT_SQL = `COALESCE(
+  g.total_percent::numeric,
+  CASE
+    WHEN g.denominator IS NOT NULL
+      AND g.numerator IS NOT NULL
+      AND g.denominator::numeric > 0
+    THEN (g.numerator::numeric / g.denominator::numeric) * 100
+    ELSE NULL
+  END
+)`;
 const AGENT_KEY_SQL = `CASE
   WHEN LOWER(BTRIM(COALESCE(t.agent, ''))) IN ('ed', 'ednalyn.c')
   THEN 'ednalyn.c'
@@ -236,7 +245,7 @@ function normalizeAgentIdentity(value) {
 }
 
 function buildAnalyticsFilters(query = {}, options = {}) {
-  const { scopedAgentKey = '' } = options;
+  const { scopedAgentKey = '', ignoreGrader = false } = options;
   const { grader = '', week = '', month = '', dateFrom = '', dateTo = '' } = query;
   const agents = parseMultiQuery(query.agent);
   const excludedAgents = parseMultiQuery(query.excludeAgent);
@@ -249,7 +258,7 @@ function buildAnalyticsFilters(query = {}, options = {}) {
   ];
   const params = [];
 
-  if (grader) {
+  if (grader && !ignoreGrader) {
     params.push(grader);
     where.push(`g.grader_name = $${params.length}`);
   }
@@ -1038,7 +1047,14 @@ app.get('/api/analytics/rankings', requireAuth, async (req, res) => {
     const filteredSummaryFilters = buildAnalyticsFilters(req.query, {
       scopedAgentKey: summaryScopedAgentKey
     });
+    const filteredGeneralSummaryFilters = buildAnalyticsFilters(req.query, {
+      scopedAgentKey: summaryScopedAgentKey,
+      ignoreGrader: true
+    });
     const filteredFilters = buildAnalyticsFilters(req.query);
+    const filteredGeneralFilters = buildAnalyticsFilters(req.query, {
+      ignoreGrader: true
+    });
     const allTimeSummaryFilters = buildAnalyticsFilters({}, {
       scopedAgentKey: summaryScopedAgentKey
     });
@@ -1049,18 +1065,25 @@ app.get('/api/analytics/rankings', requireAuth, async (req, res) => {
        SELECT
          COUNT(*)::int AS total_tickets,
          COUNT(*) FILTER (WHERE is_human_graded)::int AS grader_ticket_count,
-         COUNT(*) FILTER (WHERE general_percent IS NOT NULL)::int AS general_ticket_count,
-         ROUND(AVG(general_percent))::int AS avg_general_score,
          ROUND(AVG(grader_percent) FILTER (WHERE is_human_graded))::int AS avg_grader_score,
          ROUND(AVG(bot_percent))::int AS avg_bot_score,
-         ROUND(AVG(ABS(grader_percent - bot_percent)) FILTER (WHERE is_human_graded AND bot_percent IS NOT NULL))::int AS avg_diff,
          COUNT(*) FILTER (WHERE is_human_graded AND grader_percent = 0)::int AS grader_autofails
        FROM base`,
       filteredSummaryFilters.params
     );
 
+    const filteredGeneralSummary = await pool.query(
+      `${analyticsBaseSql(filteredGeneralSummaryFilters.whereSql)}
+       SELECT
+         COUNT(*) FILTER (WHERE general_percent IS NOT NULL)::int AS general_ticket_count,
+         ROUND(AVG(general_percent))::int AS avg_general_score,
+         ROUND(AVG(ABS(general_percent - bot_percent)) FILTER (WHERE general_percent IS NOT NULL AND bot_percent IS NOT NULL))::int AS avg_diff
+       FROM base`,
+      filteredGeneralSummaryFilters.params
+    );
+
     const filteredGeneralAgents = await pool.query(
-      `${analyticsBaseSql(filteredFilters.whereSql)}
+      `${analyticsBaseSql(filteredGeneralFilters.whereSql)}
        SELECT
          MIN(agent) AS agent,
          COUNT(*)::int AS ticket_count,
@@ -1070,7 +1093,7 @@ app.get('/api/analytics/rankings', requireAuth, async (req, res) => {
        WHERE general_percent IS NOT NULL
        GROUP BY agent_key
        ORDER BY rank, agent ASC`,
-      filteredFilters.params
+      filteredGeneralFilters.params
     );
 
     const filteredGraderAgents = await pool.query(
@@ -1102,7 +1125,7 @@ app.get('/api/analytics/rankings', requireAuth, async (req, res) => {
     );
 
     const weeklyGeneralRanks = await pool.query(
-      `${analyticsBaseSql(filteredFilters.whereSql)}
+      `${analyticsBaseSql(filteredGeneralFilters.whereSql)}
        , grouped AS (
          SELECT
            week,
@@ -1125,7 +1148,7 @@ app.get('/api/analytics/rankings', requireAuth, async (req, res) => {
          )::int AS rank
        FROM grouped
        ORDER BY TO_DATE(week, 'MM/DD/YYYY') DESC NULLS LAST, rank ASC, agent ASC`,
-      filteredFilters.params
+      filteredGeneralFilters.params
     );
 
     const weeklyGraderRanks = await pool.query(
@@ -1191,7 +1214,7 @@ app.get('/api/analytics/rankings', requireAuth, async (req, res) => {
          ROUND(AVG(general_percent))::int AS avg_general_score,
          ROUND(AVG(grader_percent) FILTER (WHERE is_human_graded))::int AS avg_grader_score,
          ROUND(AVG(bot_percent))::int AS avg_bot_score,
-         ROUND(AVG(ABS(grader_percent - bot_percent)) FILTER (WHERE is_human_graded AND bot_percent IS NOT NULL))::int AS avg_diff,
+         ROUND(AVG(ABS(general_percent - bot_percent)) FILTER (WHERE general_percent IS NOT NULL AND bot_percent IS NOT NULL))::int AS avg_diff,
          COUNT(*) FILTER (WHERE is_human_graded AND grader_percent = 0)::int AS grader_autofails
        FROM base`,
       allTimeSummaryFilters.params
@@ -1240,7 +1263,10 @@ app.get('/api/analytics/rankings', requireAuth, async (req, res) => {
     );
 
     res.json({
-      filtered_summary: filteredSummary.rows[0] || {},
+      filtered_summary: {
+        ...(filteredSummary.rows[0] || {}),
+        ...(filteredGeneralSummary.rows[0] || {})
+      },
       filtered_general_agents: filteredGeneralAgents.rows,
       filtered_grader_agents: filteredGraderAgents.rows,
       filtered_bot_agents: filteredBotAgents.rows,
