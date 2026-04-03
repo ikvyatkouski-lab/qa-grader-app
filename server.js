@@ -160,7 +160,7 @@ const BOT_PERCENT_SQL = `COALESCE(
 )`;
 
 const HUMAN_GRADE_SQL = `LOWER(BTRIM(COALESCE(NULLIF(g.grader_name, ''), NULLIF(g.grader_type, ''), 'bot'))) <> 'bot'`;
-const GENERAL_PERCENT_SQL = `COALESCE(g.total_percent::numeric, ${BOT_PERCENT_SQL})`;
+const GENERAL_PERCENT_SQL = `g.total_percent::numeric`;
 const AGENT_KEY_SQL = `CASE
   WHEN LOWER(BTRIM(COALESCE(t.agent, ''))) IN ('ed', 'ednalyn.c')
   THEN 'ednalyn.c'
@@ -1039,22 +1039,10 @@ app.get('/api/analytics/rankings', requireAuth, async (req, res) => {
       scopedAgentKey: summaryScopedAgentKey
     });
     const filteredFilters = buildAnalyticsFilters(req.query);
-    const allTimeSummaryFilters = buildAnalyticsFilters({
-      ...req.query,
-      week: '',
-      month: '',
-      dateFrom: '',
-      dateTo: ''
-    }, {
+    const allTimeSummaryFilters = buildAnalyticsFilters({}, {
       scopedAgentKey: summaryScopedAgentKey
     });
-    const allTimeFilters = buildAnalyticsFilters({
-      ...req.query,
-      week: '',
-      month: '',
-      dateFrom: '',
-      dateTo: ''
-    });
+    const allTimeFilters = buildAnalyticsFilters({});
 
     const filteredSummary = await pool.query(
       `${analyticsBaseSql(filteredSummaryFilters.whereSql)}
