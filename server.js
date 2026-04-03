@@ -17,23 +17,51 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-const allowedOrigins = [
+const allowedOrigins = new Set([
   'http://localhost:5500',
   'http://127.0.0.1:5500',
-  'https://testqa-5h8.pages.dev'
-];
+  ...String(process.env.CORS_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean)
+]);
 
-app.set('trust proxy', 1);
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  if (allowedOrigins.has(origin)) return true;
 
-app.use(cors({
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === 'https:' && /\.pages\.dev$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+const corsOptions = {
   origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (isAllowedOrigin(origin)) {
       return callback(null, true);
     }
     return callback(new Error(`Not allowed by CORS: ${origin}`));
   },
-  credentials: true
-}));
+  credentials: true,
+  optionsSuccessStatus: 204
+};
+
+app.set('trust proxy', 1);
+
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (isAllowedOrigin(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.append('Vary', 'Origin');
+  }
+  next();
+});
 
 app.use(express.json({ limit: '200mb' }));
 
@@ -1445,6 +1473,25 @@ app.patch('/api/admin/users/:id/credentials', requireUserMgmt, async (req, res) 
 });
 
 const port = process.env.PORT || 3001;
+app.use((err, req, res, next) => {
+  console.error(err);
+
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  const origin = req.headers.origin;
+  if (isAllowedOrigin(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.append('Vary', 'Origin');
+  }
+
+  res.status(err.status || 500).json({
+    error: err.message || 'Internal Server Error'
+  });
+});
+
 app.listen(port, () => {
   console.log(`API listening on http://localhost:${port}`);
 });
