@@ -1211,12 +1211,49 @@ async function saveGradeBatch(gradesBatch) {
   return resp.json();
 }
 
+// Header row for bot-generated CSVs that have no header line.
+// Column order: date;week;agent;created_time;inbox;front_url;bot_denom;bot_num;bot_pct;
+//   andi_denom;andi_num;andi_pct;diff;grader;
+//   grammar_score;grammar_cause;tone_score;tone_cause;timeliness_score;timeliness_cause;
+//   efficiency_score;efficiency_cause;_ov1;_ov2;
+//   probing_score;probing_cause;_ov3;_ov4;
+//   problem_score;problem_cause;_ov5;_ov6;
+//   education_score;education_cause;_ov7;_ov8;
+//   resolution_score;resolution_cause;_ov9;_ov10;
+//   docs_score;docs_cause;_ov11;_ov12;
+//   chatbot_score;chatbot_cause;autofail;autofail_cause;bug_esc;bug_esc_cause
+const HEADERLESS_BOT_CSV_HEADER = [
+  'Ticket Date','Week','Agent','Created Time','Inbox','Front URL',
+  "Bot Denominator","Bot Numerator","Bot's score",
+  "Andi's Denominator","Andi's Numerator","Andi's score",
+  'Diff','Grader',
+  'Grammar & Language (5)','Grammar & Language Cause',
+  'Tone & Personalization (5)','Tone & Personalization Cause',
+  'Timeliness & Responsiveness (10)','Timeliness & Responsiveness Cause',
+  'Ticket Efficiency (15)','Ticket Efficiency Cause','_ov1','_ov2',
+  'Probing & Clarification (10)','Probing & Clarification Cause','_ov3','_ov4',
+  'Problem Statement Comprehension (20)','Problem Statement Comprehension Cause','_ov5','_ov6',
+  'Customer Education (15)','Customer Education Cause','_ov7','_ov8',
+  'Resolution Quality (20)','Resolution Quality Cause','_ov9','_ov10',
+  'Documentation & Notes (10)','Documentation & Notes Cause','_ov11','_ov12',
+  'Chatbot Education','Chatbot Education Cause',
+  'Auto-Fail','Auto-Fail Cause','Bug Escalation','Bug Escalation Cause'
+].join(';');
+
 function parseImportedCsv(text, options = {}){
   const { submitted = false } = options;
   const records = parseDelimitedRecords(String(text).replace(/^\uFEFF/, ''));
   if(!records.length) throw new Error('Import error');
 
   const sep = ';';
+
+  // Auto-detect headerless CSVs: if the first field of the first row looks like
+  // a date (M/D/YYYY), it's a bot-generated CSV without a header row.
+  const firstField = (parseDelimitedLine(records[0], sep)[0] || '').trim();
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(firstField)) {
+    records.unshift(HEADERLESS_BOT_CSV_HEADER);
+  }
+
   const headers = parseDelimitedLine(records[0], sep).map(h => h.replace(/^"|"$/g, '').trim());
   const parsedTickets = [];
   const localGrades = {};
