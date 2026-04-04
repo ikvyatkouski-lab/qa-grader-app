@@ -294,6 +294,10 @@ table.dt tbody tr:hover{background:var(--sf2)}
 #va::-webkit-scrollbar{width:4px}
 #va::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:4px}
 .an-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:400px;color:var(--mu);gap:9px}
+.an-subtabs{display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid var(--bd);padding-bottom:10px}
+.an-subtab{padding:6px 16px;border-radius:7px;font-family:var(--fn);font-size:12px;font-weight:500;cursor:pointer;border:1px solid transparent;background:transparent;color:var(--mu);transition:all .15s}
+.an-subtab:hover{color:var(--tx);background:var(--sf2)}
+.an-subtab.on{background:var(--acs);border-color:var(--ac);color:var(--ac)}
 .kpi-section-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--mu);margin-bottom:8px;margin-top:4px}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:18px}
 .kpi{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);padding:15px}
@@ -373,7 +377,15 @@ table.dt tbody tr:hover{background:var(--sf2)}
 .tdm-card{position:relative;display:flex;flex-direction:column;width:min(1180px,calc(100vw - 32px));height:min(88vh,900px);margin:4vh auto;background:var(--sf);border:1px solid var(--bd2);border-radius:14px;box-shadow:0 32px 80px rgba(0,0,0,.55);overflow:hidden}
 .tdm-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid var(--bd);flex-shrink:0}
 .tdm-head h3{font-size:16px;font-weight:600}
-.tdm-body{flex:1;overflow:auto;padding:18px}
+.tdm-body{flex:1;overflow:auto;padding:18px;position:relative}
+.tdm-body.review-gate-active{overflow:hidden}
+.tdm-body.review-gate-active>*:not(.review-gate){filter:blur(5px);pointer-events:none;user-select:none}
+.review-gate{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.38);backdrop-filter:blur(2px)}
+.review-gate-card{background:var(--sf);border:1px solid var(--bd2);border-radius:16px;padding:36px 32px;max-width:380px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:14px;box-shadow:0 24px 64px rgba(0,0,0,.4)}
+.review-gate-ic{font-size:36px;line-height:1}
+.review-gate-title{font-size:18px;font-weight:600}
+.review-gate-sub{font-size:13px;color:var(--mu);line-height:1.55;max-width:290px}
+.review-gate-btn{max-width:260px}
 .tdm-body::-webkit-scrollbar{width:5px;height:5px}
 .tdm-body::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:5px}
 .tdm-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:16px}

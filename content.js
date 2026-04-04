@@ -88,7 +88,7 @@ const C = [
     id:'problem',
     label:'Problem Statement Comprehension',
     max:20,
-    opts:[0,4,8,16,20,'NA'],
+    opts:[0,4,8,12,16,20,'NA'],
     causes:[
       'No problem statement',
       'Incorrect problem statement',
@@ -159,7 +159,7 @@ const C = [
     id:'chatbot',
     label:'Chatbot Education',
     max:16,
-    opts:[0,4,8,16,20,'NA'],
+    opts:[0,4,8,12,16,20,'NA'],
     causes:[
       'Did not provide follow up reply when necessary.',
       'Failed to tag Fake News',
@@ -219,7 +219,7 @@ const AFS = [
     desc:'Bug-related escalation',
     type:'score',
     max:20,
-    opts:[0,4,8,16,20,'NA'],
+    opts:[0,4,8,12,16,20,'NA'],
     causes:[
       'Delayed bug reporting',
       'Lacks necessary details',
@@ -237,7 +237,7 @@ const AFS = [
     desc:'Post-bug follow-up',
     type:'score',
     max:20,
-    opts:[0,4,8,16,20,'NA'],
+    opts:[0,4,8,12,16,20,'NA'],
     causes:[
       'Failed to update the bug report',
       'Failed to update the user/s',
@@ -278,6 +278,8 @@ const tabDirty = { s: true, n: true, m: true, a: true, u: true };
 function markTabsDirty() { Object.keys(tabDirty).forEach(k => { tabDirty[k] = true; }); }
 let editing = false;
 let selectedIds = new Set();
+let reviewTimerStart = null;
+let reviewTimerInterval = null;
 function defaultTicketFilters(){
   return { category:'', inbox:'', agent:'', week:'', convId:'', dateFrom:'', dateTo:'', grader:'', scoreFrom:'', scoreTo:'', autofail:'' };
 }
@@ -1216,17 +1218,6 @@ async function saveGradeBatch(gradesBatch) {
   return resp.json();
 }
 
-// Header row for bot-generated CSVs that have no header line.
-// Column order: date;week;agent;created_time;inbox;front_url;bot_denom;bot_num;bot_pct;
-//   andi_denom;andi_num;andi_pct;diff;grader;
-//   grammar_score;grammar_cause;tone_score;tone_cause;timeliness_score;timeliness_cause;
-//   efficiency_score;efficiency_cause;_ov1;_ov2;
-//   probing_score;probing_cause;_ov3;_ov4;
-//   problem_score;problem_cause;_ov5;_ov6;
-//   education_score;education_cause;_ov7;_ov8;
-//   resolution_score;resolution_cause;_ov9;_ov10;
-//   docs_score;docs_cause;_ov11;_ov12;
-//   chatbot_score;chatbot_cause;autofail;autofail_cause;bug_esc;bug_esc_cause
 const HEADERLESS_BOT_CSV_HEADER = [
   'Ticket Date','Week','Agent','Created Time','Inbox','Front URL',
   "Bot Denominator","Bot Numerator","Bot's score",
@@ -1252,8 +1243,6 @@ function parseImportedCsv(text, options = {}){
 
   const sep = ';';
 
-  // Auto-detect headerless CSVs: if the first field of the first row looks like
-  // a date (M/D/YYYY), it's a bot-generated CSV without a header row.
   const firstField = (parseDelimitedLine(records[0], sep)[0] || '').trim();
   if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(firstField)) {
     records.unshift(HEADERLESS_BOT_CSV_HEADER);
@@ -2465,7 +2454,7 @@ function renderAnalyticsFilters(submitted) {
     ${graders.length ? `<div class="hfbar-grp"><span class="hfbar-lbl">Grader</span>
       <select data-af="grader"><option value="">All</option>${singleOpt('grader',graders)}</select></div>` : ''}
     ${renderAnalyticsCheckGroup('Agents', 'agents', agentOptions, AF.agents)}
-    ${renderAnalyticsCheckGroup('Remove Agent', 'excludedAgents', agentOptions, AF.excludedAgents)}
+    ${user?.role !== 'agent' ? renderAnalyticsCheckGroup('Remove Agent', 'excludedAgents', agentOptions, AF.excludedAgents) : ''}
     ${renderAnalyticsCheckGroup('Category', 'categories', categoryOptions, AF.categories)}
     ${renderAnalyticsCheckGroup('Inbox', 'inboxes', inboxOptions, AF.inboxes)}
     ${weeks.length ? `<div class="hfbar-grp"><span class="hfbar-lbl">Week</span>
@@ -3219,12 +3208,12 @@ async function acknowledgeAgentTicket(ticketId) {
   return r.json().catch(() => ({}));
 }
 
-async function submitTicketReflection(ticketId, reflection) {
+async function submitTicketReflection(ticketId, reflection, reviewDurationSeconds) {
   const r = await fetch(`${API_BASE}/api/tickets/${ticketId}/reflection`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ reflection })
+    body: JSON.stringify({ reflection, review_duration_seconds: reviewDurationSeconds ?? null })
   });
   if (!r.ok) {
     const data = await r.json().catch(() => ({}));
@@ -3276,12 +3265,15 @@ function wireTicketDetailReflection(ticketId, body) {
     submitBtn.addEventListener('click', async () => {
       submitBtn.disabled = true;
       try {
-        const data = await submitTicketReflection(ticketId, text.value);
+        const reviewDuration = reviewTimerStart ? Math.round((Date.now() - reviewTimerStart) / 1000) : null;
+        const data = await submitTicketReflection(ticketId, text.value, reviewDuration);
         if (grades[String(ticketId)]) {
           grades[String(ticketId)].reflection = data.reflection_text || text.value.trim();
           grades[String(ticketId)].reflectionSubmittedAt = data.reflection_submitted_at || new Date().toISOString();
           grades[String(ticketId)].agentAcknowledgedAt = data.reflection_submitted_at || new Date().toISOString();
         }
+        if (reviewTimerInterval) { clearInterval(reviewTimerInterval); reviewTimerInterval = null; }
+        reviewTimerStart = null;
         closeTicketDetail();
         await loadTicketsFromServer();
         switchTab('n');
@@ -3381,6 +3373,8 @@ function closeTicketDetail() {
   if (modal) modal.style.display = 'none';
   currentDetailTicketId = null;
   currentDetailOptions = {};
+  if (reviewTimerInterval) { clearInterval(reviewTimerInterval); reviewTimerInterval = null; }
+  reviewTimerStart = null;
 }
 
 window.openTicketDetail = async function(ticketId) {
@@ -3397,9 +3391,17 @@ window.openTicketDetail = async function(ticketId) {
 
   currentDetailTicketId = String(ticketId);
   currentDetailOptions = options;
+  if (reviewTimerInterval) { clearInterval(reviewTimerInterval); reviewTimerInterval = null; }
+  reviewTimerStart = null;
+  const timerEl = document.getElementById('review-timer');
+  if (timerEl) timerEl.remove();
   modal.style.display = 'block';
   title.textContent = t.subject || 'Untitled ticket';
   subtitle.textContent = `${t.agent || '—'}${t.createdTime ? ` · ${t.createdTime}` : ''}${t.inbox ? ` · ${t.inbox}` : ''}`;
+
+  const aP = pct(agentRaw(String(ticketId)), agentDenom(String(ticketId)));
+  const needsReviewGate = user?.role === 'agent' && isNewAgentTicket(ticketId) && aP < 100 && !grades[String(ticketId)]?.reflection;
+
   const renderModalBody = () => {
     body.innerHTML = ticketDetailBody(t, grades[String(ticketId)]);
     loadConvImages(body);
@@ -3410,6 +3412,36 @@ window.openTicketDetail = async function(ticketId) {
       await fetchFrontConv(t);
       renderModalBody();
     });
+    if (needsReviewGate && !reviewTimerStart) {
+      body.classList.add('review-gate-active');
+      body.insertAdjacentHTML('afterbegin', `<div class="review-gate" id="review-gate">
+        <div class="review-gate-card">
+          <div class="review-gate-ic">📋</div>
+          <div class="review-gate-title">Review Required</div>
+          <div class="review-gate-sub">Read through the conversation and grading feedback carefully before writing your reflection.</div>
+          <button class="btn-p review-gate-btn" id="review-gate-start">Start reviewing the ticket</button>
+        </div>
+      </div>`);
+      document.getElementById('review-gate-start')?.addEventListener('click', () => {
+        document.getElementById('review-gate')?.remove();
+        body.classList.remove('review-gate-active');
+        reviewTimerStart = Date.now();
+        const head = document.querySelector('.tdm-head');
+        if (head && !head.querySelector('#review-timer')) {
+          head.insertAdjacentHTML('beforeend', `<span id="review-timer" style="font-family:var(--mo);font-size:12px;color:var(--am);background:var(--ams);padding:4px 10px;border-radius:6px">⏱ 00:00</span>`);
+        }
+        const updateTimer = () => {
+          const el = document.getElementById('review-timer');
+          if (!el || !reviewTimerStart) return;
+          const secs = Math.floor((Date.now() - reviewTimerStart) / 1000);
+          const m = String(Math.floor(secs / 60)).padStart(2, '0');
+          const s = String(secs % 60).padStart(2, '0');
+          el.textContent = `⏱ ${m}:${s}`;
+        };
+        updateTimer();
+        reviewTimerInterval = setInterval(updateTimer, 1000);
+      });
+    }
   };
   renderModalBody();
 
@@ -3532,14 +3564,28 @@ function renderSubs(){
   renderPager('submissions', 'subs-pager', pageData);
 }
 
+let analyticsSubTab = 'general';
+
 async function renderAnalytics(){
   const cont = document.getElementById('an-content');
   const allDone = TICKETS.filter(t => grades[t.id]?.submitted);
   const done = applyAnalyticsFilters(allDone);
   const generalDone = allDone.filter(t => ticketMatchesAnalyticsFilters(t, { ignoreGrader:true }));
 
+  const canSplitAnalytics = user?.role === 'cs_leader' || user?.role === 'admin';
+  const subTabHtml = canSplitAnalytics ? `<div class="an-subtabs">
+    <button class="an-subtab${analyticsSubTab === 'general' ? ' on' : ''}" data-subtab="general">General Analytics</button>
+    <button class="an-subtab${analyticsSubTab === 'submissions' ? ' on' : ''}" data-subtab="submissions">Submissions Analytics</button>
+  </div>` : '';
+
   if(!allDone.length){
-    cont.innerHTML = `<div class="an-empty"><div class="empty-ic">📊</div><p>No graded tickets yet.</p></div>`;
+    cont.innerHTML = `${subTabHtml}<div class="an-empty"><div class="empty-ic">📊</div><p>No graded tickets yet.</p></div>`;
+    if (canSplitAnalytics) wireAnalyticsSubTabs(cont);
+    return;
+  }
+
+  if (canSplitAnalytics && analyticsSubTab === 'submissions') {
+    renderSubmissionsAnalytics(cont, subTabHtml, allDone);
     return;
   }
 
@@ -3608,31 +3654,31 @@ async function renderAnalytics(){
   const avgGeneralScore = filteredGeneralSummary.avgScore;
   const avgGraderScore = Number(filteredSummary.avg_grader_score) || 0;
   const avgBotScore = Number(filteredSummary.avg_bot_score) || 0;
-  const avgDiff = filteredGeneralSummary.avgGap;
+  const avgDiff = Math.abs(avgBotScore - avgGraderScore);
   const allTimeTicketCount = Number(allTimeSummary.total_tickets) || 0;
   const allTimeGraderCount = Number(allTimeSummary.grader_ticket_count) || 0;
   const allTimeGeneralCount = allTimeGeneralSummary.count || allTimeTicketCount;
   const allTimeAvgGeneralScore = allTimeGeneralSummary.avgScore;
   const allTimeAvgGraderScore = Number(allTimeSummary.avg_grader_score) || 0;
   const allTimeAvgBotScore = Number(allTimeSummary.avg_bot_score) || 0;
-  const allTimeAvgDiff = allTimeGeneralSummary.avgGap;
+  const allTimeAvgDiff = Math.abs(allTimeAvgBotScore - allTimeAvgGraderScore);
 
-  cont.innerHTML = `${renderAnalyticsFilters(allDone)}
+  cont.innerHTML = `${subTabHtml}${renderAnalyticsFilters(allDone)}
   ${analyticsActiveChips()}
   ${!(done.length || generalDone.length) ? `<div class="an-empty"><div class="empty-ic">📊</div><p>No analytics match the current filters.</p></div>` : `<div class="kpi-section-label">Filtered</div>
   <div class="kpis">
-    <div class="kpi"><div class="kv" style="color:#0ea5a4">${avgGeneralScore}%</div><div class="kl">Avg general score</div><div class="ks">Andi's score, ${filteredGeneralCount} filtered tickets</div></div>
+    <div class="kpi"><div class="kv" style="color:#0ea5a4">${avgGeneralScore}%</div><div class="kl">Avg general score</div><div class="ks">${filteredGeneralCount} filtered tickets</div></div>
     <div class="kpi"><div class="kv" style="color:#1ec97a">${filteredTicketCount}</div><div class="kl">Filtered tickets</div><div class="ks">${filteredGraderCount} graded by grader</div></div>
     <div class="kpi"><div class="kv" style="color:#4f7cff">${avgGraderScore}%</div><div class="kl">Avg grader score</div><div class="ks">human-graded only</div></div>
     <div class="kpi"><div class="kv" style="color:#9d7df0">${avgBotScore}%</div><div class="kl">Avg bot score</div><div class="ks">all filtered tickets</div></div>
-    <div class="kpi"><div class="kv" style="color:#f0a020">${avgDiff}%</div><div class="kl">Avg score gap</div><div class="ks">Andi's score vs bot score</div></div>
+    <div class="kpi"><div class="kv" style="color:#f0a020">${avgDiff}%</div><div class="kl">Avg score gap</div><div class="ks">avg bot vs avg grader</div></div>
   </div>
   <div class="kpi-section-label">All-time</div>
   <div class="kpis">
-    <div class="kpi"><div class="kv" style="color:#0ea5a4">${allTimeAvgGeneralScore}%</div><div class="kl">General avg</div><div class="ks">Andi's score, ${allTimeGeneralCount} tickets</div></div>
+    <div class="kpi"><div class="kv" style="color:#0ea5a4">${allTimeAvgGeneralScore}%</div><div class="kl">General avg</div><div class="ks">${allTimeGeneralCount} tickets</div></div>
     <div class="kpi"><div class="kv" style="color:#4f7cff">${allTimeAvgGraderScore}%</div><div class="kl">Grader avg</div><div class="ks">${allTimeGraderCount} human-graded tickets</div></div>
     <div class="kpi"><div class="kv" style="color:#9d7df0">${allTimeAvgBotScore}%</div><div class="kl">Bot avg</div><div class="ks">all submitted tickets</div></div>
-    <div class="kpi"><div class="kv" style="color:#f0a020">${allTimeAvgDiff}%</div><div class="kl">Score gap</div><div class="ks">Andi's score vs bot score</div></div>
+    <div class="kpi"><div class="kv" style="color:#f0a020">${allTimeAvgDiff}%</div><div class="kl">Score gap</div><div class="ks">avg bot vs avg grader</div></div>
   </div>
   <div class="cgrid">
     <div class="ccard wide"><div class="ctitle">Weekly Ranking By General Score</div><div class="rank-scroll"><table class="atbl" id="atbl-general"></table></div></div>
@@ -3664,6 +3710,7 @@ async function renderAnalytics(){
     saveAnalyticsFilters();
     renderAnalytics();
   });
+  if (canSplitAnalytics) wireAnalyticsSubTabs(cont);
 
   if(!done.length && !generalDone.length) return;
 
@@ -3731,6 +3778,126 @@ async function renderAnalytics(){
   renderWeeklyRankingMatrix('atbl-general', weeklyGeneralRows, filteredGeneralRows, 'No general-score ranking data for the current filters.');
   renderWeeklyRankingMatrix('atbl-grader', weeklyGraderRows, filteredGraderRows, 'No grader ranking data for the current filters.');
   renderWeeklyRankingMatrix('atbl-bot', weeklyBotRows, filteredBotRows, 'No bot ranking data for the current filters.');
+}
+
+function wireAnalyticsSubTabs(cont) {
+  cont.querySelectorAll('.an-subtab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      analyticsSubTab = btn.dataset.subtab;
+      tabDirty.a = true;
+      renderAnalytics();
+    });
+  });
+}
+
+function renderSubmissionsAnalytics(cont, subTabHtml, allDone) {
+  Object.values(charts).forEach(c => { try { c.destroy(); } catch(e) {} });
+  charts = {};
+
+  // Build weekly trend data from client-side tickets
+  const byWeek = {};
+  allDone.forEach(t => {
+    const wk = t.week || weekOf(t.date || t.createdTime);
+    if (!wk) return;
+    if (!byWeek[wk]) byWeek[wk] = { bot: [], general: [], grader: [] };
+    const bP = botPercent(t);
+    const gP = generalPercent(t.id);
+    if (bP !== null) byWeek[wk].bot.push(bP);
+    if (gP !== null) byWeek[wk].general.push(gP);
+    if (isHumanGradedTicket(t.id)) {
+      const aP = pct(agentRaw(t.id), agentDenom(t.id));
+      if (aP !== null) byWeek[wk].grader.push(aP);
+    }
+  });
+  const weeks = Object.keys(byWeek).sort();
+  const trendBot = weeks.map(w => avgRounded(byWeek[w].bot));
+  const trendGeneral = weeks.map(w => avgRounded(byWeek[w].general));
+  const trendGrader = weeks.map(w => byWeek[w].grader.length ? avgRounded(byWeek[w].grader) : null);
+
+  // Build submissions table rows
+  const tableRows = allDone.slice().sort((a, b) => (b.date || b.createdTime || '').localeCompare(a.date || a.createdTime || '')).map(t => {
+    const g = grades[t.id];
+    const aP = pct(agentRaw(t.id), agentDenom(t.id));
+    const bP = botPercent(t);
+    const diff = aP - bP;
+    const reflection = (g.reflection || '').trim();
+    const wk = t.week || weekOf(t.date || t.createdTime);
+    const reflStatus = reflection
+      ? `<span style="color:var(--gr);font-size:11px">✓ Submitted</span>`
+      : (aP < 100 ? `<span style="color:var(--am);font-size:11px">Pending</span>` : `<span style="color:var(--mu);font-size:11px">N/A</span>`);
+    return `<tr>
+      <td><button class="tdm-open" onclick="openTicketDetail('${t.id}')">Open</button></td>
+      <td>${wk || '—'}</td>
+      <td>${fmtDate(t.date || t.createdTime)}</td>
+      <td>${escapeHtml(t.agent || '—')}</td>
+      <td>${escapeHtml(t.inbox || '—')}</td>
+      <td><span class="schip" style="background:${bP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${scol(bP)}">${bP}%</span></td>
+      <td><span class="schip" style="background:${aP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${scol(aP)}">${aP}%</span></td>
+      <td style="color:${diff > 0 ? 'var(--gr)' : diff < 0 ? 'var(--rd)' : 'var(--mu)'}">${diff > 0 ? '+' : ''}${diff}%</td>
+      <td>${escapeHtml(g.grader || 'Bot')}</td>
+      <td>${reflStatus}</td>
+      <td class="cc" style="max-width:200px">${escapeHtml(reflection || '—')}</td>
+    </tr>`;
+  }).join('');
+
+  cont.innerHTML = `${subTabHtml}${renderAnalyticsFilters(allDone)}${analyticsActiveChips()}
+  <div class="ccard wide" style="margin-bottom:14px">
+    <div class="ctitle">Weekly Score Trends</div>
+    <div class="cwrap tall"><canvas id="ch-trends"></canvas></div>
+  </div>
+  <div class="ccard wide">
+    <div class="ctitle">All Submissions</div>
+    <div class="dtw" style="max-height:500px">
+      <table class="dt">
+        <thead><tr>
+          <th>Open</th><th>Week</th><th>Date</th><th>Agent</th><th>Inbox</th>
+          <th>Bot Score</th><th>Grader Score</th><th>Diff</th><th>Grader</th>
+          <th>Reflection</th><th>Reflection text</th>
+        </tr></thead>
+        <tbody>${tableRows || `<tr><td colspan="11" style="padding:24px;text-align:center;color:var(--mu)">No submissions match current filters.</td></tr>`}</tbody>
+      </table>
+    </div>
+  </div>`;
+
+  // Wire filters
+  cont.querySelectorAll('[data-af]').forEach(el => {
+    el.addEventListener('change', () => { AF[el.dataset.af] = el.value; saveAnalyticsFilters(); renderAnalytics(); });
+  });
+  cont.querySelectorAll('[data-af-checkgroup]').forEach(group => {
+    const sync = () => {
+      AF[group.dataset.afCheckgroup] = sanitizeStringArray([...group.querySelectorAll('input:checked')].map(i => i.value));
+      saveAnalyticsFilters(); renderAnalytics();
+    };
+    group.querySelectorAll('input').forEach(input => input.addEventListener('change', sync));
+  });
+  cont.querySelector('#analytics-clear')?.addEventListener('click', () => { AF = defaultAnalyticsFilters(); saveAnalyticsFilters(); renderAnalytics(); });
+  wireAnalyticsSubTabs(cont);
+
+  if (!weeks.length) return;
+
+  Chart.defaults.color = '#6b7189';
+  Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
+  Chart.defaults.font.family = 'DM Sans';
+
+  charts.trends = new Chart(document.getElementById('ch-trends'), {
+    type: 'line',
+    data: {
+      labels: weeks,
+      datasets: [
+        { label: 'General Score', data: trendGeneral, borderColor: '#0ea5a4', backgroundColor: 'rgba(14,165,164,0.12)', tension: 0.35, pointRadius: 3, fill: false },
+        { label: 'Bot Score', data: trendBot, borderColor: '#9d7df0', backgroundColor: 'rgba(157,125,240,0.1)', tension: 0.35, pointRadius: 3, fill: false },
+        { label: 'Grader Score', data: trendGrader, borderColor: '#4f7cff', backgroundColor: 'rgba(79,124,255,0.1)', tension: 0.35, pointRadius: 3, fill: false, spanGaps: true }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'top', labels: { boxWidth: 10, padding: 12, font: { size: 11 } } } },
+      scales: {
+        x: { ticks: { font: { size: 9 }, maxRotation: 35 }, grid: { display: false } },
+        y: { beginAtZero: false, min: 0, max: 100, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { callback: v => v + '%' } }
+      }
+    }
+  });
 }
 
 function ticketDateFromCreatedTime(createdTime) {

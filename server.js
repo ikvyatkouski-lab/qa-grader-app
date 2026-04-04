@@ -79,7 +79,7 @@ app.use(session({
     httpOnly: true,
     secure: true,
     sameSite: 'none',
-    maxAge: 1000 * 60 * 60 * 24 * 30
+    maxAge: 1000 * 60 * 60 * 24 * 7
   }
 }));
 
@@ -211,6 +211,7 @@ async function ensureReflectionSchema() {
   await pool.query(`ALTER TABLE grades ADD COLUMN IF NOT EXISTS reflection_submitted_at timestamptz`);
   await pool.query(`ALTER TABLE grades ADD COLUMN IF NOT EXISTS agent_acknowledged_at timestamptz`);
   await pool.query(`ALTER TABLE grades ADD COLUMN IF NOT EXISTS reflection_read_at timestamptz`);
+  await pool.query(`ALTER TABLE grades ADD COLUMN IF NOT EXISTS review_duration_seconds integer`);
 
   if (!hadAgentAcknowledgedAt) {
     await pool.query(
@@ -1205,6 +1206,7 @@ app.post('/api/tickets/:id/reflection', requireAuth, async (req, res) => {
     if (!grade) return res.status(404).json({ error: 'Ticket not found' });
 
     const reflection = String(req.body?.reflection || '').trim();
+    const reviewDurationSeconds = Number(req.body?.review_duration_seconds) || null;
     const totalPercent = Number(grade.total_percent);
     if (Number.isFinite(totalPercent) && totalPercent < 100 && !reflection) {
       return res.status(400).json({ error: 'Reflection is required for tickets below 100%.' });
@@ -1215,9 +1217,10 @@ app.post('/api/tickets/:id/reflection', requireAuth, async (req, res) => {
        SET reflection_text = $1,
            reflection_submitted_at = NOW(),
            agent_acknowledged_at = NOW(),
-           reflection_read_at = NULL
+           reflection_read_at = NULL,
+           review_duration_seconds = COALESCE($3, review_duration_seconds)
        WHERE id = $2`,
-      [reflection, grade.grade_id]
+      [reflection, grade.grade_id, reviewDurationSeconds]
     );
 
     res.json({
