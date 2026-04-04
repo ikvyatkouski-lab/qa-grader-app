@@ -1633,9 +1633,20 @@ function buildGradePayload(ticketId, sourceGrades = grades, fallbackGrader = use
   const { preserveStoredTotals = false } = options;
   const g = sourceGrades[ticketId];
   const t = TICKETS.find(tk => String(tk.id) === String(ticketId));
-  const rawUnfiltered = C.reduce((s, c) => s + nv(g.scores[c.id]), 0);
+
+  // Resolve each criterion's score/cause: use grader's value if changed, else fall back to bot's
+  const resolvedScores = {};
+  const resolvedCauses = {};
+  C.forEach(c => {
+    const graderScore = g.scores[c.id];
+    const graderCause = g.causes[c.id];
+    resolvedScores[c.id] = isNA(graderScore) ? (t?.bot?.[c.id] ?? graderScore) : graderScore;
+    resolvedCauses[c.id] = (!graderCause || graderCause === '— select —') ? (t?.bot?.[c.id + 'Cause'] || graderCause) : graderCause;
+  });
+
+  const rawUnfiltered = C.reduce((s, c) => s + nv(resolvedScores[c.id]), 0);
   const isAutoFail = g.af.autofail && !g.af.autofail_ov;
-  const computedDenominator = Math.min(C.reduce((s, c) => (c.id === 'tag_usage' || isNA(g.scores[c.id])) ? s : s + c.max, 0), 110);
+  const computedDenominator = Math.min(C.reduce((s, c) => (c.id === 'tag_usage' || isNA(resolvedScores[c.id])) ? s : s + c.max, 0), 110);
   const computedNumerator = (!isAutoFail && computedDenominator > 0 && pct(rawUnfiltered, computedDenominator) < 50 && rawUnfiltered > 0) ? 0 : (isAutoFail ? 0 : rawUnfiltered);
   const storedNumerator = metricNumber(g.numerator);
   const storedDenominator = metricNumber(g.denominator);
@@ -1664,20 +1675,12 @@ function buildGradePayload(ticketId, sourceGrades = grades, fallbackGrader = use
     brian_notes: g.brianNotes || '',
     fixed: g.fixed || 'No',
     submitted: true,
-    breakdown: C.map(c => {
-      const graderScore = g.scores[c.id];
-      const graderCause = g.causes[c.id];
-      const botScore = t?.bot?.[c.id];
-      const botCause = t?.bot?.[c.id + 'Cause'];
-      const score = isNA(graderScore) ? (botScore ?? graderScore) : graderScore;
-      const cause = (!graderCause || graderCause === '— select —') ? (botCause || graderCause) : graderCause;
-      return {
-        category_id: c.id,
-        score,
-        cause,
-        custom_cause: g.customCauses[c.id] || ''
-      };
-    }),
+    breakdown: C.map(c => ({
+      category_id: c.id,
+      score: resolvedScores[c.id],
+      cause: resolvedCauses[c.id],
+      custom_cause: g.customCauses[c.id] || ''
+    })),
     flags: AFS.map(a => ({
       flag_id: a.id,
       value: g.af[a.id],
