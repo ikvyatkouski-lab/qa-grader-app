@@ -1,3 +1,7 @@
 node_modules
 .env
-.DS_StoreQA_grader/
+.DS_Store
+QA_grader/
+content.js
+styles.css
+index.html
