@@ -1058,6 +1058,7 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
         g.reflection_submitted_at,
         g.agent_acknowledged_at,
         g.reflection_read_at,
+        g.review_duration_seconds,
         COALESCE((
           SELECT json_agg(
             json_build_object(
