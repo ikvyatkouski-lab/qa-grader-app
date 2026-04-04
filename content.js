@@ -121,7 +121,7 @@ const C = [
     id:'resolution',
     label:'Resolution Quality',
     max:20,
-    opts:[0,4,8,16,20,'NA'],
+    opts:[0,4,8,12,16,20,'NA'],
     causes:[
       'Incomplete Resolution',
       'Improper Resolution',
@@ -2681,6 +2681,18 @@ function renderDetail(){
 
   const locked = g.submitted && !editing;
   const bot = t.bot || {};
+
+  // Pre-populate grader scores/causes with bot values for pending tickets
+  if (!g.submitted) {
+    C.forEach(c => {
+      if (isNA(g.scores[c.id]) && bot[c.id] !== undefined && !isNA(bot[c.id])) {
+        g.scores[c.id] = bot[c.id];
+      }
+      if ((!g.causes[c.id] || g.causes[c.id] === '— select —') && bot[c.id + 'Cause'] && bot[c.id + 'Cause'] !== 'NA') {
+        g.causes[c.id] = bot[c.id + 'Cause'];
+      }
+    });
+  }
   const aRaw = agentRaw(t.id);
   const bRaw = botRaw(t);
   const aRawU = agentRawUnfiltered(t.id);
@@ -2951,12 +2963,25 @@ function renderDetail(){
   const sub = document.getElementById('sub-btn');
   if(sub) sub.addEventListener('click', async () => {
     try {
-      await saveTicketGrade(t.id);
-      grades[t.id].submitted = true;
+      const currentId = t.id;
+      // Find next pending ticket before submitting
+      const pendingList = applyFilters(TICKETS.filter(x => !grades[x.id]?.submitted));
+      const currentIdx = pendingList.findIndex(x => x.id === currentId);
+      const nextTicket = pendingList[currentIdx + 1] || pendingList[currentIdx - 1] || null;
+
+      await saveTicketGrade(currentId);
+      grades[currentId].submitted = true;
       editing = false;
       toast('Grade submitted and saved ✓');
       await loadTicketsFromServer();
-      sel = TICKETS.find(x => x.id === t.id) || null;
+
+      // Auto-advance to next pending ticket
+      if (nextTicket) {
+        const refreshed = TICKETS.find(x => x.id === nextTicket.id);
+        sel = refreshed || null;
+      } else {
+        sel = TICKETS.find(x => x.id === currentId) || null;
+      }
       renderList();
       renderDetail();
     } catch (e) {
