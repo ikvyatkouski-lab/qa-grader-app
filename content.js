@@ -272,6 +272,10 @@ let user = null;
 let sel = null;
 let grades = {};
 let filter = 'all';
+
+// Dirty flags — tabs only re-render when data has changed since last visit
+const tabDirty = { s: true, n: true, m: true, a: true, u: true };
+function markTabsDirty() { Object.keys(tabDirty).forEach(k => { tabDirty[k] = true; }); }
 let editing = false;
 let selectedIds = new Set();
 function defaultTicketFilters(){
@@ -350,7 +354,8 @@ function saveAnalyticsFilters(){
 let AF = loadAnalyticsFilters();
 
 function applyThemePreference(theme, persist = true) {
-  const normalized = theme === 'light' ? 'light' : 'system';
+  const valid = ['system', 'light', 'dark', 'contrast', 'grey'];
+  const normalized = valid.includes(theme) ? theme : 'system';
   document.documentElement.dataset.theme = normalized;
   if (persist) {
     try { localStorage.setItem(THEME_KEY, normalized); } catch (e) {}
@@ -1409,6 +1414,8 @@ function applyRoleUI() {
     renderNewTickets();
     renderMyFilters();
     renderMyTickets();
+    tabDirty.n = false;
+    tabDirty.m = false;
   }
 }
 
@@ -1567,10 +1574,7 @@ async function loadTicketsFromServer() {
 
   renderQueueFilters();
   renderList();
-  renderSubs();
-  renderNewTickets();
-  renderMyTickets();
-  renderAnalytics();
+  markTabsDirty();
   await loadNotifications();
 }
 
@@ -1830,10 +1834,10 @@ function switchTab(t) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
   document.getElementById('v' + t)?.classList.add('on');
 
-  if (t === 's') { renderSubsFilters(); renderSubs(); }
-  if (t === 'n') { renderNewTickets(); }
-  if (t === 'm') { renderMyFilters(); renderMyTickets(); }
-  if (t === 'a') renderAnalytics();
+  if (t === 's') { if (tabDirty.s) { renderSubsFilters(); renderSubs(); tabDirty.s = false; } }
+  if (t === 'n') { if (tabDirty.n) { renderNewTickets(); tabDirty.n = false; } }
+  if (t === 'm') { if (tabDirty.m) { renderMyFilters(); renderMyTickets(); tabDirty.m = false; } }
+  if (t === 'a') { if (tabDirty.a) { renderAnalytics(); tabDirty.a = false; } }
   if (t === 'u') loadAdminUsers();
 }
 
