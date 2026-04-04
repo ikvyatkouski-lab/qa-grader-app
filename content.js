@@ -1989,7 +1989,7 @@ function ticketScore(t) {
 function applyFilters(tickets) {
   return tickets.filter(t => {
     const g = grades[t.id];
-    if (F.category && g?.category !== F.category) return false;
+    if (F.category && !analyticsCategoryMatch(t.id, [F.category])) return false;
     if (F.inbox    && t.inbox   !== F.inbox)       return false;
     if (F.agent    && t.agent   !== F.agent)       return false;
     if (F.week     && t.week    !== F.week)        return false;
@@ -2180,14 +2180,14 @@ function renderQueueFilters() {
   const weeks    = uniq(TICKETS.map(t => t.week));
   const inboxes  = uniq(TICKETS.map(t => t.inbox));
   const agents   = canSeeAgent ? uniq(TICKETS.map(t => t.agent)) : [];
-  const cats     = uniq(Object.values(grades).map(g => g?.category).filter(Boolean));
   const graders  = uniq(Object.values(grades).map(g => g?.grader).filter(Boolean));
 
   const sel = (val, arr) => arr.map(o => `<option value="${o}" ${F[val]===o?'selected':''}>${o}</option>`).join('');
+  const catOpts = ANALYTICS_CATEGORY_OPTIONS.map(c => `<option value="${c.id}" ${F.category===c.id?'selected':''}>${c.label}</option>`).join('');
 
   body.innerHTML = `
-    ${cats.length ? `<div class="qfbar-row"><span class="qfbar-lbl">Category</span>
-      <select data-f="category"><option value="">All</option>${sel('category',cats)}</select></div>` : ''}
+    <div class="qfbar-row"><span class="qfbar-lbl">Category</span>
+      <select data-f="category"><option value="">All</option>${catOpts}</select></div>
     <div class="qfbar-row"><span class="qfbar-lbl">Inbox</span>
       <select data-f="inbox"><option value="">All</option>${sel('inbox',inboxes)}</select></div>
     ${canSeeAgent ? `<div class="qfbar-row"><span class="qfbar-lbl">Agent</span>
@@ -3095,11 +3095,13 @@ function renderMyTickets() {
     const tWk = t.week || weekOf(t.date || t.createdTime);
 
     return `<tr>
+      <td><button class="tdm-open" onclick="openTicketDetail('${t.id}')">Open</button></td>
       <td>${tWk}</td>
       <td>${fmtDate(t.date || t.createdTime)}</td>
       <td>${t.agent || ''}</td>
       <td style="font-size:10px">${t.createdTime || ''}</td>
       <td>${t.inbox || ''}</td>
+      <td class="cn">${convIdFromFrontUrl(t.frontUrl) || ''}</td>
       <td style="font-size:10px">${t.frontUrl ? `<a href="${t.frontUrl}" target="_blank" rel="noopener noreferrer">link</a>` : ''}</td>
       <td class="cn">${bD}</td>
       <td class="cn">${bR}</td>
