@@ -1632,6 +1632,7 @@ async function loadGradeForTicket(ticketId) {
 function buildGradePayload(ticketId, sourceGrades = grades, fallbackGrader = user?.username || user?.email || 'Bot', options = {}) {
   const { preserveStoredTotals = false } = options;
   const g = sourceGrades[ticketId];
+  const t = TICKETS.find(tk => String(tk.id) === String(ticketId));
   const rawUnfiltered = C.reduce((s, c) => s + nv(g.scores[c.id]), 0);
   const isAutoFail = g.af.autofail && !g.af.autofail_ov;
   const computedDenominator = Math.min(C.reduce((s, c) => (c.id === 'tag_usage' || isNA(g.scores[c.id])) ? s : s + c.max, 0), 110);
@@ -1663,12 +1664,20 @@ function buildGradePayload(ticketId, sourceGrades = grades, fallbackGrader = use
     brian_notes: g.brianNotes || '',
     fixed: g.fixed || 'No',
     submitted: true,
-    breakdown: C.map(c => ({
-      category_id: c.id,
-      score: g.scores[c.id],
-      cause: g.causes[c.id],
-      custom_cause: g.customCauses[c.id] || ''
-    })),
+    breakdown: C.map(c => {
+      const graderScore = g.scores[c.id];
+      const graderCause = g.causes[c.id];
+      const botScore = t?.bot?.[c.id];
+      const botCause = t?.bot?.[c.id + 'Cause'];
+      const score = isNA(graderScore) ? (botScore ?? graderScore) : graderScore;
+      const cause = (!graderCause || graderCause === '— select —') ? (botCause || graderCause) : graderCause;
+      return {
+        category_id: c.id,
+        score,
+        cause,
+        custom_cause: g.customCauses[c.id] || ''
+      };
+    }),
     flags: AFS.map(a => ({
       flag_id: a.id,
       value: g.af[a.id],
