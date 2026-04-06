@@ -191,6 +191,37 @@ function currentAgentKey(sessionUser) {
   return normalizeAgentIdentity(sessionUser?.email || sessionUser?.username);
 }
 
+async function ensureLogsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_logs (
+      id bigserial PRIMARY KEY,
+      user_id integer,
+      username text,
+      role text,
+      action text NOT NULL,
+      details jsonb,
+      ip text,
+      created_at timestamptz NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS user_logs_created_at_idx ON user_logs (created_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS user_logs_user_id_idx ON user_logs (user_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS user_logs_action_idx ON user_logs (action)`);
+}
+
+async function logAction(req, action, details = {}) {
+  try {
+    const u = req.session?.user;
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || null;
+    await pool.query(
+      `INSERT INTO user_logs (user_id, username, role, action, details, ip) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [u?.id || null, u?.username || null, u?.role || null, action, JSON.stringify(details), ip]
+    );
+  } catch (e) {
+    console.error('logAction failed:', e.message);
+  }
+}
+
 async function ensureReflectionSchema() {
   const columnExists = async columnName => {
     const result = await pool.query(
@@ -863,7 +894,7 @@ app.post('/api/auth/login', async (req, res) => {
         console.error(saveError);
         return res.status(500).json({ error: 'Failed to persist session' });
       }
-
+      logAction(req, 'login', { username: user.username, role: user.role });
       res.json({ ok: true, user: req.session.user });
     });
   } catch (error) {
@@ -873,6 +904,7 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 app.post('/api/auth/logout', (req, res) => {
+  logAction(req, 'logout', {});
   req.session.destroy(() => {
     res.clearCookie('connect.sid');
     res.json({ ok: true });
@@ -910,7 +942,9 @@ app.post('/api/admin/users', requireUserMgmt, async (req, res) => {
       [email, username, passwordHash, role]
     );
 
-    res.json({ ok: true, user: result.rows[0] });
+    const created = result.rows[0];
+    logAction(req, 'user_created', { target_username: created.username, target_role: created.role, target_id: created.id });
+    res.json({ ok: true, user: created });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -933,7 +967,9 @@ app.patch('/api/admin/users/:id/status', requireUserMgmt, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    res.json({ ok: true, user: result.rows[0] });
+    const updated = result.rows[0];
+    logAction(req, 'user_status_changed', { target_id: updated.id, target_username: updated.username, is_active: !!is_active });
+    res.json({ ok: true, user: updated });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -957,6 +993,7 @@ app.patch('/api/admin/users/:id/password', requireUserMgmt, async (req, res) => 
       return res.status(404).json({ error: 'User not found' });
     }
 
+    logAction(req, 'user_password_changed', { target_id: result.rows[0].id, target_username: result.rows[0].username });
     res.json({ ok: true });
   } catch (error) {
     console.error(error);
@@ -1224,6 +1261,7 @@ app.post('/api/tickets/:id/reflection', requireAuth, async (req, res) => {
       [reflection, grade.grade_id, reviewDurationSeconds]
     );
 
+    logAction(req, 'reflection_submitted', { ticket_id: req.params.id });
     res.json({
       ok: true,
       reflection_text: reflection,
@@ -1705,6 +1743,7 @@ app.post('/api/tickets/import', requireAuth, async (req, res) => {
     }
 
     await client.query('COMMIT');
+    logAction(req, 'tickets_imported', { count: saved.length, source_file_name: source_file_name || null });
     res.json({ ok: true, count: saved.length, ids: saved });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -1789,6 +1828,7 @@ app.put('/api/tickets/:id/grade', requireAuth, async (req, res) => {
     const gradeId = await upsertGrade(client, ticketId, payload, req.session.user.id);
 
     await client.query('COMMIT');
+    logAction(req, payload.submitted ? 'grade_submitted' : 'grade_saved', { ticket_id: ticketId, grade_id: gradeId });
     res.json({ ok: true, grade_id: gradeId });
   } catch (error) {
     await client.query('ROLLBACK');
@@ -1814,6 +1854,7 @@ app.delete('/api/tickets/:id', requireDeletePerm, async (req, res) => {
       return res.status(404).json({ error: 'Ticket not found' });
     }
 
+    logAction(req, 'ticket_deleted', { ticket_id: req.params.id });
     res.json({ ok: true });
   } catch (error) {
     console.error(error);
@@ -1828,6 +1869,7 @@ app.delete('/api/tickets', requireAdmin, async (req, res) => {
       `UPDATE tickets SET deleted_at = NOW(), deleted_by_user_id = $1 WHERE deleted_at IS NULL RETURNING id`,
       [req.session.user.id]
     );
+    logAction(req, 'tickets_purged', { count: result.rowCount });
     res.json({ ok: true, count: result.rowCount });
   } catch (error) {
     console.error(error);
@@ -1841,6 +1883,7 @@ app.delete('/api/admin/users/:id', requireUserMgmt, async (req, res) => {
     if (String(req.params.id) === String(req.session.user.id)) {
       return res.status(400).json({ error: 'Cannot delete your own account' });
     }
+    const lookup = await pool.query(`SELECT username, role FROM users WHERE id = $1`, [req.params.id]);
     const result = await pool.query(
       `DELETE FROM users WHERE id = $1 RETURNING id`,
       [req.params.id]
@@ -1848,6 +1891,7 @@ app.delete('/api/admin/users/:id', requireUserMgmt, async (req, res) => {
     if (!result.rows.length) {
       return res.status(404).json({ error: 'User not found' });
     }
+    logAction(req, 'user_deleted', { target_id: req.params.id, target_username: lookup.rows[0]?.username });
     res.json({ ok: true });
   } catch (error) {
     console.error(error);
@@ -1867,7 +1911,57 @@ app.patch('/api/admin/users/:id/credentials', requireUserMgmt, async (req, res) 
     if (!result.rows.length) {
       return res.status(404).json({ error: 'User not found' });
     }
+    logAction(req, 'user_credentials_edited', { target_id: req.params.id, target_username: username, new_role: role });
     res.json({ ok: true, user: result.rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Logs — admin + cs_leader
+app.get('/api/logs', requireUserMgmt, async (req, res) => {
+  try {
+    const { username, action, dateFrom, dateTo, limit = 200, offset = 0 } = req.query;
+    const where = [];
+    const params = [];
+
+    if (username) {
+      params.push(`%${username}%`);
+      where.push(`l.username ILIKE $${params.length}`);
+    }
+    if (action && action !== 'all') {
+      params.push(action);
+      where.push(`l.action = $${params.length}`);
+    }
+    if (dateFrom) {
+      params.push(dateFrom);
+      where.push(`l.created_at >= $${params.length}::date`);
+    }
+    if (dateTo) {
+      params.push(dateTo);
+      where.push(`l.created_at < ($${params.length}::date + interval '1 day')`);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    params.push(Math.min(Number(limit) || 200, 500));
+    params.push(Number(offset) || 0);
+
+    const result = await pool.query(
+      `SELECT l.id, l.user_id, l.username, l.role, l.action, l.details, l.ip, l.created_at
+       FROM user_logs l
+       ${whereSql}
+       ORDER BY l.created_at DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params
+    );
+
+    const countResult = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM user_logs l ${whereSql}`,
+      params.slice(0, params.length - 2)
+    );
+
+    res.json({ rows: result.rows, total: countResult.rows[0].total });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -1894,7 +1988,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-ensureReflectionSchema()
+Promise.all([ensureReflectionSchema(), ensureLogsTable()])
   .then(() => {
     app.listen(port, () => {
       console.log(`API listening on http://localhost:${port}`);
