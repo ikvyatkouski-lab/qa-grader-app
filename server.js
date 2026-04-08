@@ -1,5 +1,6 @@
 const https = require('https');
 const crypto = require('crypto');
+const path = require('path');
 require('dotenv').config();
 
 const express = require('express');
@@ -83,6 +84,9 @@ app.use(session({
     maxAge: 1000 * 60 * 60 * 24 * 7
   }
 }));
+
+// Serve frontend static files from /public
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Token auth (for cross-domain clients where SameSite=None cookies are blocked)
 const TOKEN_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -2029,6 +2033,11 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({
     error: err.message || 'Internal Server Error'
   });
+});
+
+// Catch-all: serve index.html for any non-API route (SPA fallback)
+app.get('*', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 Promise.all([ensureReflectionSchema(), ensureLogsTable()])
