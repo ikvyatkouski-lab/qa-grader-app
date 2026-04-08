@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(ls /Users/igarkvyatkouski/Desktop/QA_grader/*.sql)",
-      "Bash(ls /Users/igarkvyatkouski/Desktop/QA_grader/schema*)"
-    ]
-  }
-}

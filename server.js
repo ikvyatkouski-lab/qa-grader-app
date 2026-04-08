@@ -1,4 +1,5 @@
 const https = require('https');
+const crypto = require('crypto');
 require('dotenv').config();
 
 const express = require('express');
@@ -83,10 +84,45 @@ app.use(session({
   }
 }));
 
+// Token auth (for cross-domain clients where SameSite=None cookies are blocked)
+const TOKEN_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+function createToken(user) {
+  const payload = Buffer.from(JSON.stringify({
+    id: user.id, email: user.email, username: user.username, role: user.role,
+    exp: Date.now() + TOKEN_TTL
+  })).toString('base64url');
+  const sig = crypto.createHmac('sha256', process.env.SESSION_SECRET).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+function verifyToken(token) {
+  if (!token || typeof token !== 'string') return null;
+  const dot = token.lastIndexOf('.');
+  if (dot < 1) return null;
+  const payload = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+  const expected = crypto.createHmac('sha256', process.env.SESSION_SECRET).update(payload).digest('base64url');
+  if (sig.length !== expected.length) return null;
+  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
+    if (data.exp && Date.now() > data.exp) return null;
+    return data;
+  } catch { return null; }
+}
+
+function getAuthUser(req) {
+  if (req.session.user) return req.session.user;
+  const authHeader = req.headers['authorization'] || '';
+  if (authHeader.startsWith('Bearer ')) return verifyToken(authHeader.slice(7));
+  return null;
+}
+
 function requireAuth(req, res, next) {
-  if (!req.session.user) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+  const user = getAuthUser(req);
+  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+  req.session.user = user; // normalise so downstream middleware works
   next();
 }
 
@@ -895,7 +931,7 @@ app.post('/api/auth/login', async (req, res) => {
         return res.status(500).json({ error: 'Failed to persist session' });
       }
       logAction(req, 'login', { username: user.username, role: user.role });
-      res.json({ ok: true, user: req.session.user });
+      res.json({ ok: true, user: req.session.user, token: createToken(req.session.user) });
     });
   } catch (error) {
     console.error(error);
@@ -912,7 +948,8 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 app.get('/api/auth/me', (req, res) => {
-  res.json({ user: req.session.user || null });
+  const user = getAuthUser(req);
+  res.json({ user: user || null });
 });
 
 app.get('/api/admin/users', requireUserMgmt, async (req, res) => {
