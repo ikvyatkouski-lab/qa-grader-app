@@ -86,8 +86,8 @@ body{font-family:var(--fn);background:var(--bg);color:var(--tx);font-size:14px;l
 #login{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:var(--bg) radial-gradient(ellipse 60% 40% at 50% 0%,rgba(79,124,255,0.14),transparent 70%);z-index:200}
 .lcard{background:var(--sf);border:1px solid var(--bd2);border-radius:16px;padding:40px;width:360px;box-shadow:0 32px 80px rgba(0,0,0,.6)}
 .llogo{display:flex;align-items:center;gap:9px;margin-bottom:26px}
-.llogo .ldot{width:8px;height:8px;border-radius:50%;background:var(--ac)}
 .llogo span{font-weight:600;font-size:15px}
+.login-brand-logo{height:18px;width:auto;flex-shrink:0}
 .lcard h1{font-size:22px;font-weight:600;margin-bottom:4px}
 .lcard>p{color:var(--mu);font-size:13px;margin-bottom:26px}
 .fld{margin-bottom:15px}
