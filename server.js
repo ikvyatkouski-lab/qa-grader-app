@@ -57,7 +57,7 @@ app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (isAllowedOrigin(origin)) {
+  if (origin && isAllowedOrigin(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.append('Vary', 'Origin');
@@ -2114,7 +2114,7 @@ app.use((err, req, res, next) => {
   }
 
   const origin = req.headers.origin;
-  if (isAllowedOrigin(origin)) {
+  if (origin && isAllowedOrigin(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.append('Vary', 'Origin');
