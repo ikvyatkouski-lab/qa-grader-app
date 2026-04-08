@@ -1393,9 +1393,19 @@ function finalAFCause(g, id){
 function applyRoleUI() {
   const role = user?.role;
   const isAgent    = role === 'agent';
+  const isQaGrader = role === 'qa_grader';
   const canAdmin   = ['admin', 'cs_leader'].includes(role);
   const canPurge   = role === 'admin';
   const canImport  = ['qa_grader', 'cs_leader', 'admin'].includes(role);
+  const gradingTab = document.querySelector('.tab[data-tab="g"]');
+  const submissionsTab = document.querySelector('.tab[data-tab="s"]');
+  const queueTitle = document.querySelector('#vg .sbh h2');
+  const submissionsTitle = document.querySelector('#vs .tview-head h2');
+
+  if (gradingTab) gradingTab.textContent = isQaGrader ? 'My Queue' : 'Grading';
+  if (submissionsTab) submissionsTab.textContent = isQaGrader ? 'My Graded Tickets' : 'Submissions';
+  if (queueTitle) queueTitle.textContent = isQaGrader ? 'My Queue' : 'Queue';
+  if (submissionsTitle) submissionsTitle.textContent = isQaGrader ? 'My Graded Tickets' : 'Submissions';
 
   // Grading + Submissions — hidden for agents
   document.querySelector('.tab[data-tab="g"]')?.style.setProperty('display', isAgent ? 'none' : '');
@@ -1454,6 +1464,7 @@ function normalizeTicketFromServer(row) {
     week: row.week || '',
     createdTime: row.created_time || '',
     frontUrl: row.front_url || '',
+    assignedGrader: row.assigned_grader || '',
     sourceFileName: row.source_file_name || '',
     conv: [],
     bot: row.bot_payload || {},
@@ -1827,6 +1838,7 @@ async function renderHome() {
     if (!r.ok) throw new Error(await r.text());
     d = await r.json();
   } catch (e) {
+    console.error('Dashboard load failed', e);
     wrap.innerHTML = `<div class="home-loading">Failed to load dashboard</div>`;
     return;
   }
@@ -2919,7 +2931,8 @@ function renderList(){
   }
 
   if(!vis.length){
-    list.innerHTML = `<div class="empty" style="height:auto;min-height:200px"><div class="empty-ic">☑</div><p>No tickets</p></div>`;
+    const emptyLabel = user?.role === 'qa_grader' ? 'No tickets in your queue' : 'No tickets';
+    list.innerHTML = `<div class="empty" style="height:auto;min-height:200px"><div class="empty-ic">☑</div><p>${emptyLabel}</p></div>`;
     if (pagerHost) pagerHost.innerHTML = '';
     updateStats();
     updateSelBar();
@@ -3915,7 +3928,9 @@ function renderSubs(){
   const allDone = TICKETS.filter(t => grades[t.id]?.submitted);
   const done = applySubmissionFilters(allDone);
   const pageData = paginateItems(done, 'submissions');
-  document.getElementById('sub-count').textContent = done.length ? `${done.length} submitted grade${done.length !== 1 ? 's' : ''}` : 'No graded tickets yet';
+  document.getElementById('sub-count').textContent = user?.role === 'qa_grader'
+    ? (done.length ? `${done.length} ticket${done.length !== 1 ? 's' : ''} graded by you` : 'No tickets graded by you yet')
+    : (done.length ? `${done.length} submitted grade${done.length !== 1 ? 's' : ''}` : 'No graded tickets yet');
 
   const thead = document.querySelector('#sub-table thead');
   const tbody = document.querySelector('#sub-table tbody');
@@ -3923,7 +3938,8 @@ function renderSubs(){
 
   if(!done.length){
     thead.innerHTML = '';
-    tbody.innerHTML = `<tr><td colspan="200" style="padding:40px;text-align:center;color:var(--mu)">No submissions yet</td></tr>`;
+    const emptyLabel = user?.role === 'qa_grader' ? 'No tickets graded by you yet' : 'No submissions yet';
+    tbody.innerHTML = `<tr><td colspan="200" style="padding:40px;text-align:center;color:var(--mu)">${emptyLabel}</td></tr>`;
     if (pagerHost) pagerHost.innerHTML = '';
     return;
   }

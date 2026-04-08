@@ -236,6 +236,22 @@ function currentAgentKey(sessionUser) {
   return normalizeAgentIdentity(sessionUser?.email || sessionUser?.username);
 }
 
+function currentGraderKeys(sessionUser) {
+  return [...new Set(
+    [sessionUser?.username, sessionUser?.email]
+      .map(value => String(value || '').trim().toLowerCase())
+      .filter(Boolean)
+  )];
+}
+
+function graderTicketAccessSql(ticketAlias, gradeAlias, namesParamIndex, userIdParamIndex) {
+  return `(
+    LOWER(BTRIM(COALESCE(${ticketAlias}.assigned_grader, ''))) = ANY($${namesParamIndex}::text[])
+    OR ${gradeAlias}.grader_user_id = $${userIdParamIndex}
+    OR LOWER(BTRIM(COALESCE(NULLIF(${gradeAlias}.grader_name, ''), NULLIF(${gradeAlias}.grader_type, ''), ''))) = ANY($${namesParamIndex}::text[])
+  )`;
+}
+
 async function ensureSchema() {
   // Core tables — safe to run on every startup (IF NOT EXISTS)
   await pool.query(`
@@ -432,6 +448,36 @@ async function findAccessibleGrade(ticketId, sessionUser) {
     return result.rows[0] || null;
   }
 
+  if (role === 'qa_grader') {
+    const graderKeys = currentGraderKeys(sessionUser);
+    const result = await pool.query(
+      `SELECT
+         t.id AS ticket_id,
+         t.ticket_date,
+         t.front_url,
+         t.agent,
+         t.subject,
+         g.id AS grade_id,
+         g.grader_user_id,
+         g.grader_name,
+         g.total_percent,
+         g.submitted,
+         g.submitted_at,
+         g.reflection_text,
+         g.reflection_submitted_at,
+         g.agent_acknowledged_at,
+         g.reflection_read_at
+       FROM tickets t
+       JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+       WHERE t.id = $1
+         AND t.deleted_at IS NULL
+         AND ${graderTicketAccessSql('t', 'g', 2, 3)}
+       LIMIT 1`,
+      [ticketId, graderKeys, sessionUser.id]
+    );
+    return result.rows[0] || null;
+  }
+
   const result = await pool.query(
     `SELECT
        t.id AS ticket_id,
@@ -458,6 +504,39 @@ async function findAccessibleGrade(ticketId, sessionUser) {
   );
 
   return result.rows[0] || null;
+}
+
+async function hardDeleteTickets(client, ticketIds) {
+  const normalizedIds = [...new Set(
+    (Array.isArray(ticketIds) ? ticketIds : [ticketIds])
+      .map(value => Number(value))
+      .filter(value => Number.isFinite(value))
+  )];
+
+  if (!normalizedIds.length) return [];
+
+  const ticketIdTexts = normalizedIds.map(String);
+
+  await client.query(
+    `DELETE FROM user_logs
+     WHERE details->>'ticket_id' = ANY($1::text[])`,
+    [ticketIdTexts]
+  );
+
+  await client.query(
+    `DELETE FROM grades
+     WHERE ticket_id = ANY($1::bigint[])`,
+    [normalizedIds]
+  );
+
+  const deleted = await client.query(
+    `DELETE FROM tickets
+     WHERE id = ANY($1::bigint[])
+     RETURNING id`,
+    [normalizedIds]
+  );
+
+  return deleted.rows.map(row => row.id);
 }
 
 function analyticsCategoryFilterSql(paramIndex) {
@@ -1082,7 +1161,7 @@ app.get('/api/home', requireAuth, async (req, res) => {
     }
 
     if (role === 'qa_grader') {
-      const graderName = u.username;
+      const graderKeys = currentGraderKeys(u);
 
       const [pending, weekTeam, lastWeekTeam, worstCat, bestCat, topInbox, bestAgent, bestAgentLast] = await Promise.all([
         // Tickets pending grading assigned to this grader
@@ -1090,7 +1169,7 @@ app.get('/api/home', requireAuth, async (req, res) => {
           SELECT COUNT(*) AS cnt FROM tickets t
           LEFT JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
           WHERE t.deleted_at IS NULL AND (g.id IS NULL OR g.submitted = FALSE)
-            AND t.assigned_grader = $1`, [graderName]),
+            AND LOWER(BTRIM(COALESCE(t.assigned_grader, ''))) = ANY($1::text[])`, [graderKeys]),
 
         // Team avg score this week
         pool.query(`
@@ -1138,7 +1217,7 @@ app.get('/api/home', requireAuth, async (req, res) => {
 
         // Best agent this week
         pool.query(`
-          SELECT ${AGENT_LABEL_SQL} AS agent, ROUND(AVG(g.total_percent)) AS avg_score, COUNT(*) AS cnt
+          SELECT MIN(${AGENT_LABEL_SQL}) AS agent, ROUND(AVG(g.total_percent)) AS avg_score, COUNT(*) AS cnt
           FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
           WHERE t.deleted_at IS NULL AND g.submitted = TRUE
             AND t.ticket_date >= $1 AND t.ticket_date < $2
@@ -1147,7 +1226,7 @@ app.get('/api/home', requireAuth, async (req, res) => {
 
         // Best agent last week
         pool.query(`
-          SELECT ${AGENT_LABEL_SQL} AS agent, ROUND(AVG(g.total_percent)) AS avg_score
+          SELECT MIN(${AGENT_LABEL_SQL}) AS agent, ROUND(AVG(g.total_percent)) AS avg_score
           FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
           WHERE t.deleted_at IS NULL AND g.submitted = TRUE
             AND t.ticket_date >= $1 AND t.ticket_date < $2
@@ -1255,7 +1334,7 @@ app.get('/api/home', requireAuth, async (req, res) => {
 
         // Best agent this week
         pool.query(`
-          SELECT ${AGENT_LABEL_SQL} AS agent, ROUND(AVG(g.total_percent)) AS avg_score, COUNT(*) AS cnt
+          SELECT MIN(${AGENT_LABEL_SQL}) AS agent, ROUND(AVG(g.total_percent)) AS avg_score, COUNT(*) AS cnt
           FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
           WHERE t.deleted_at IS NULL AND g.submitted = TRUE
             AND t.ticket_date >= $1 AND t.ticket_date < $2
@@ -1264,7 +1343,7 @@ app.get('/api/home', requireAuth, async (req, res) => {
 
         // Best agent last week
         pool.query(`
-          SELECT ${AGENT_LABEL_SQL} AS agent, ROUND(AVG(g.total_percent)) AS avg_score
+          SELECT MIN(${AGENT_LABEL_SQL}) AS agent, ROUND(AVG(g.total_percent)) AS avg_score
           FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
           WHERE t.deleted_at IS NULL AND g.submitted = TRUE
             AND t.ticket_date >= $1 AND t.ticket_date < $2
@@ -1321,6 +1400,11 @@ app.get('/api/home', requireAuth, async (req, res) => {
 
     res.json({ role });
   } catch (error) {
+    console.error('GET /api/home failed', {
+      role: req.session?.user?.role || null,
+      userId: req.session?.user?.id || null,
+      message: error.message
+    });
     console.error(error);
     res.status(500).json({ error: error.message });
   }
@@ -1543,8 +1627,19 @@ app.get('/api/front/attachment', requireAuth, async (req, res) => {
 
 app.get('/api/tickets', requireAuth, async (req, res) => {
   try {
-    const isAgent = req.session.user.role === 'agent';
-    const params = isAgent ? [currentAgentKey(req.session.user)] : [];
+    const role = req.session.user.role;
+    const isAgent = role === 'agent';
+    const isQaGrader = role === 'qa_grader';
+    let params = [];
+    let accessWhereSql = '';
+
+    if (isAgent) {
+      params = [currentAgentKey(req.session.user)];
+      accessWhereSql = `AND ${AGENT_KEY_SQL} = $1`;
+    } else if (isQaGrader) {
+      params = [currentGraderKeys(req.session.user), req.session.user.id];
+      accessWhereSql = `AND ${graderTicketAccessSql('t', 'g', 1, 2)}`;
+    }
 
     const result = await pool.query(`
       WITH bd AS (
@@ -1605,7 +1700,7 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
       LEFT JOIN bd ON bd.grade_id = g.id
       LEFT JOIN fl ON fl.grade_id = g.id
       WHERE t.deleted_at IS NULL
-      ${isAgent ? `AND ${AGENT_KEY_SQL} = $1` : ''}
+      ${accessWhereSql}
       ORDER BY t.imported_at DESC
     `, params);
 
@@ -2343,40 +2438,46 @@ app.put('/api/tickets/:id/grade', requireAuth, async (req, res) => {
 });
 
 app.delete('/api/tickets/:id', requireDeletePerm, async (req, res) => {
-  try {
-    const result = await pool.query(
-      `UPDATE tickets
-       SET deleted_at = NOW(),
-           deleted_by_user_id = $1
-       WHERE id = $2 AND deleted_at IS NULL
-       RETURNING id`,
-      [req.session.user.id, req.params.id]
-    );
+  const client = await pool.connect();
 
-    if (!result.rows.length) {
+  try {
+    await client.query('BEGIN');
+    const deletedIds = await hardDeleteTickets(client, [req.params.id]);
+
+    if (!deletedIds.length) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Ticket not found' });
     }
 
-    logAction(req, 'ticket_deleted', { ticket_id: req.params.id });
+    await client.query('COMMIT');
+    logAction(req, 'ticket_deleted', {});
     res.json({ ok: true });
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error(error);
     res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 
 // Purge all tickets — admin only
 app.delete('/api/tickets', requireAdmin, async (req, res) => {
+  const client = await pool.connect();
+
   try {
-    const result = await pool.query(
-      `UPDATE tickets SET deleted_at = NOW(), deleted_by_user_id = $1 WHERE deleted_at IS NULL RETURNING id`,
-      [req.session.user.id]
-    );
-    logAction(req, 'tickets_purged', { count: result.rowCount });
-    res.json({ ok: true, count: result.rowCount });
+    await client.query('BEGIN');
+    const existing = await client.query(`SELECT id FROM tickets`);
+    const deletedIds = await hardDeleteTickets(client, existing.rows.map(row => row.id));
+    await client.query('COMMIT');
+    logAction(req, 'tickets_purged', { count: deletedIds.length });
+    res.json({ ok: true, count: deletedIds.length });
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error(error);
     res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 
