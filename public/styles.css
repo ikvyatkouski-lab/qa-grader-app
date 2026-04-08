@@ -426,12 +426,12 @@ table.dt tbody tr:hover{background:var(--sf2)}
 .tdm-open:hover{color:var(--tx);background:var(--sf2)}
 
 /* ── Homepage ─────────────────────────────────────────────────────────── */
-#vh{overflow-y:auto}
-.home-wrap{padding:28px 32px;max-width:1200px;margin:0 auto}
+#vh{overflow:auto}
+.home-wrap{padding:28px 32px;width:100%;max-width:none;margin:0}
 .home-loading{color:var(--mu);padding:40px;text-align:center}
-.home-grid{display:flex;flex-wrap:nowrap;overflow-x:auto;gap:18px;padding-bottom:8px}
-.home-card{flex:0 0 240px;min-width:240px;background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:20px 22px;display:flex;flex-direction:column;gap:8px}
-.home-card-wide{flex:0 0 auto;min-width:340px}
+.home-grid{display:flex;flex-wrap:wrap;align-items:stretch;overflow:visible;gap:18px;padding-bottom:8px}
+.home-card{flex:1 1 240px;min-width:240px;max-width:100%;background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:20px 22px;display:flex;flex-direction:column;gap:8px}
+.home-card-wide{flex:2 1 420px;min-width:340px}
 .home-card-accent{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac)}
 .home-vs{font-size:12px;color:var(--mu);margin-top:2px}
 .home-vs strong{color:var(--tx)}
