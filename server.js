@@ -2126,7 +2126,7 @@ app.use((err, req, res, next) => {
 });
 
 // Catch-all: serve index.html for any non-API route (SPA fallback)
-app.get('*', (_req, res) => {
+app.get('/{*path}', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
