@@ -232,6 +232,7 @@ const AGENT_LABEL_SQL = `CASE
   ELSE BTRIM(COALESCE(t.agent, ''))
 END`;
 const LOW_SCORE_REVIEW_CUTOFF_DATE = '2026-03-30';
+const NEW_TICKET_ASSIGNMENT_CUTOFF_DATE = '2026-04-01';
 
 function currentAgentKey(sessionUser) {
   return normalizeAgentIdentity(sessionUser?.email || sessionUser?.username);
@@ -1322,17 +1323,21 @@ app.get('/api/home', requireAuth, async (req, res) => {
             AND t.ticket_date >= $1 AND t.ticket_date < $2
           GROUP BY t.inbox ORDER BY cnt DESC LIMIT 1`, [thisWeekFrom, thisWeekTo]),
 
-        // Unassigned tickets with score <= 60% from 2026-03-30 onward
+        // Unassigned new tickets imported from 2026-04-01 onward
+        // plus unassigned reviewed tickets with score <= 60% from 2026-03-30 onward
         pool.query(`
           SELECT t.id, t.subject, t.agent, t.inbox, t.ticket_date, t.week,
             g.total_percent, g.grader_name
           FROM tickets t
-          JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
-          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+          LEFT JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL
             AND (t.assigned_grader IS NULL OR t.assigned_grader = '')
-            AND t.ticket_date >= $1
-            AND g.total_percent <= 60
-          ORDER BY t.ticket_date DESC LIMIT 100`, [LOW_SCORE_REVIEW_CUTOFF_DATE]),
+            AND (
+              (t.ticket_date >= $1 AND (g.id IS NULL OR g.submitted = FALSE))
+              OR
+              (t.ticket_date >= $2 AND g.submitted = TRUE AND g.total_percent <= 60)
+            )
+          ORDER BY t.ticket_date DESC LIMIT 100`, [NEW_TICKET_ASSIGNMENT_CUTOFF_DATE, LOW_SCORE_REVIEW_CUTOFF_DATE]),
 
         // Best agent this week
         pool.query(`

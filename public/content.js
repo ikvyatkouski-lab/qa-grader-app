@@ -20,10 +20,20 @@ const THEME_KEY = 'qa-theme';
 const ANALYTICS_FILTER_KEY = 'qa-analytics-filters';
 // Tickets on or before this date are excluded from reflection requirements and submissions analytics
 const REFLECTION_CUTOFF_MS = new Date('2026-03-29T23:59:59').getTime();
+const LOW_SCORE_REVIEW_CUTOFF_DATE = '2026-03-30';
+const NEW_TICKET_ASSIGNMENT_CUTOFF_DATE = '2026-04-01';
+
 function isBeforeCutoff(dateStr) {
   if (!dateStr) return false;
   const ms = new Date(dateStr).getTime();
   return !isNaN(ms) && ms <= REFLECTION_CUTOFF_MS;
+}
+
+function isOnOrAfterDate(dateStr, cutoffDate) {
+  if (!dateStr) return false;
+  const ms = new Date(dateStr).getTime();
+  const cutoffMs = new Date(`${cutoffDate}T00:00:00`).getTime();
+  return !isNaN(ms) && !isNaN(cutoffMs) && ms >= cutoffMs;
 }
 
 const C = [
@@ -302,6 +312,7 @@ function markTabsDirty() { Object.keys(tabDirty).forEach(k => { tabDirty[k] = tr
 let ticketsLoading = false;
 let editing = false;
 let selectedIds = new Set();
+let locallyHiddenGradingTicketIds = new Set();
 let reviewTimerStart = null;
 let reviewTimerInterval = null;
 let reviewAccumulated = {};   // { ticketId: totalSeconds } — persists across open/close
@@ -476,15 +487,26 @@ function graderVisibleTickets(tickets = TICKETS) {
   return tickets.filter(ticket => isAssignedToCurrentGrader(ticket) || isGradedByCurrentGrader(ticket.id));
 }
 
+function gradingListTickets(tickets = TICKETS) {
+  return graderVisibleTickets(tickets).filter(ticket => !locallyHiddenGradingTicketIds.has(String(ticket.id)));
+}
+
 function reviewAssignmentTickets(tickets = TICKETS) {
   return tickets.filter(ticket => {
     const g = grades[String(ticket.id)];
     const score = metricNumber(g?.totalPercent);
-    return !!g?.submitted
-      && !ticket.assignedGrader
+    const ticketDate = ticket.date || '';
+    const isUnassigned = !String(ticket.assignedGrader || '').trim();
+    const isNewImportedTicket = isUnassigned
+      && isOnOrAfterDate(ticketDate, NEW_TICKET_ASSIGNMENT_CUTOFF_DATE)
+      && (!g || !g.submitted);
+    const isLowScoreReviewTicket = isUnassigned
+      && !!g?.submitted
       && score != null
       && score <= 60
-      && !isBeforeCutoff(ticket.date || '');
+      && isOnOrAfterDate(ticketDate, LOW_SCORE_REVIEW_CUTOFF_DATE);
+
+    return isNewImportedTicket || isLowScoreReviewTicket;
   });
 }
 
@@ -1656,6 +1678,7 @@ async function loadTicketsFromServer() {
 
     TICKETS = rows.map(normalizeTicketFromServer);
     grades = {};
+    locallyHiddenGradingTicketIds.clear();
 
     for (const row of rows) {
       if (row.grade_id || row.submitted) {
@@ -2031,7 +2054,9 @@ async function renderHome() {
        <div class="home-sub">${d.active_sessions} active session${d.active_sessions !== 1 ? 's' : ''}</div>`);
 
     if (role === 'cs_leader') {
-      const newReviewCount = Array.isArray(d.unassigned_low_score) ? d.unassigned_low_score.length : 0;
+      const newReviewCount = TICKETS.length
+        ? reviewAssignmentTickets().length
+        : (Array.isArray(d.unassigned_low_score) ? d.unassigned_low_score.length : 0);
       cards += homeCard('New Review Tickets',
         `<div class="home-big" style="color:${newReviewCount > 0 ? 'var(--am)' : 'var(--mu)'}">${newReviewCount}</div>
          <div class="home-sub">tickets ready for assignment review</div>
@@ -3033,7 +3058,7 @@ function updateSelBar() {
 function renderList(){
   const list = document.getElementById('tlist');
   const pagerHost = document.getElementById('grading-pager');
-  const queueTickets = graderVisibleTickets(TICKETS);
+  const queueTickets = gradingListTickets(TICKETS);
 
   // apply status filter then field filters
   const statusFiltered = queueTickets.filter(t =>
@@ -3104,7 +3129,7 @@ window.toggleSelect = function(id, checked) {
 };
 
 function updateStats(){
-  const sourceTickets = graderVisibleTickets(TICKETS);
+  const sourceTickets = gradingListTickets(TICKETS);
   const done = sourceTickets.filter(t => grades[t.id]?.submitted);
   document.getElementById('sg').textContent = done.length;
   document.getElementById('sp').textContent = sourceTickets.length - done.length;
@@ -3247,6 +3272,10 @@ function renderDetail(){
   const diff = aPct - bPct;
   const afActive = g.af.autofail && !g.af.autofail_ov;
   const below50 = !afActive && aRawU > 0 && aRawPct < 50;
+  const canAssignTicket = ['cs_leader', 'admin'].includes(user?.role);
+  const graderOptions = availableGraders.map(grader =>
+    `<option value="${escapeHtml(grader.username)}" ${String(t.assignedGrader || '') === String(grader.username) ? 'selected' : ''}>${escapeHtml(grader.username)}</option>`
+  ).join('');
   const secs = {};
 
   C.forEach(c => {
@@ -3402,7 +3431,16 @@ function renderDetail(){
         ${t.frontUrl ? `<span class="mtag">🔗 <a href="${t.frontUrl}" target="_blank" rel="noopener noreferrer" style="color:inherit">Front URL</a></span>` : ''}
         ${badge}
       </div></div>
-    <div class="sec"><div class="slbl">Conversation${t.frontUrl ? ` <button class="bsm" style="margin-left:8px;font-size:10px" id="reload-conv">↻ Reload</button>` : ''}</div><div class="conv">${(t.conv && t.conv.length) ? t.conv.map(m => {
+    <div class="sec"><div class="slbl">Conversation${t.frontUrl || canAssignTicket ? `<span style="display:inline-flex;gap:8px;align-items:center;margin-left:8px">${t.frontUrl ? `<button class="bsm" style="font-size:10px" id="reload-conv">↻ Reload</button>` : ''}${canAssignTicket ? `<span class="assign-menu" style="position:relative;display:inline-block">
+      <button class="bsm" style="font-size:10px" type="button" id="detail-assign-toggle">Assign</button>
+      <span class="assign-pop" id="detail-assign-pop" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:20;min-width:220px;padding:10px;border:1px solid var(--bd2);border-radius:10px;background:var(--sf);box-shadow:0 16px 40px rgba(0,0,0,.16)">
+        <select id="detail-assign-select" style="width:100%;margin-bottom:8px">
+          <option value="">Select grader</option>
+          ${graderOptions}
+        </select>
+        <button class="btn-p" type="button" id="detail-assign-confirm" style="width:100%">Assign</button>
+      </span>
+    </span>` : ''}</span>` : ''}</div><div class="conv">${(t.conv && t.conv.length) ? t.conv.map(m => {
       const isNote = m.s === 'note';
       const isCust = m.s === 'c';
       const icon = isNote ? '💬' : (isCust ? '👤' : '🎧');
@@ -3423,6 +3461,36 @@ function renderDetail(){
     fetchFrontConv(sel).then(() => renderDetail());
     renderDetail();
   });
+
+  const assignToggle = document.getElementById('detail-assign-toggle');
+  const assignPop = document.getElementById('detail-assign-pop');
+  const assignConfirm = document.getElementById('detail-assign-confirm');
+  const assignSelect = document.getElementById('detail-assign-select');
+
+  if (assignToggle && assignPop) {
+    assignToggle.addEventListener('click', e => {
+      e.stopPropagation();
+      closeAssignMenus();
+      assignPop.style.display = assignPop.style.display === 'none' ? '' : 'none';
+    });
+  }
+
+  if (assignConfirm && assignSelect) {
+    assignConfirm.addEventListener('click', async e => {
+      e.stopPropagation();
+      const grader = assignSelect.value || '';
+      try {
+        await assignTickets([t.id], grader);
+        toast(`Assigned ticket to ${grader} ✓`);
+        await loadTicketsFromServer();
+        sel = TICKETS.find(ticket => String(ticket.id) === String(t.id)) || null;
+        renderList();
+        renderDetail();
+      } catch (err) {
+        toast(err.message || 'Assign failed', 'err');
+      }
+    });
+  }
 
   C.forEach(c => {
     const sc = document.getElementById('sc-' + c.id);
@@ -3507,26 +3575,29 @@ function renderDetail(){
   if(sub) sub.addEventListener('click', async () => {
     try {
       const currentId = t.id;
-      // Find next pending ticket before submitting
-      const pendingList = applyFilters(TICKETS.filter(x => !grades[x.id]?.submitted));
+      // Find the next pending ticket in the current grading queue before submitting.
+      const pendingList = applyFilters(
+        gradingListTickets().filter(x => !grades[x.id]?.submitted)
+      );
       const currentIdx = pendingList.findIndex(x => x.id === currentId);
       const nextTicket = pendingList[currentIdx + 1] || pendingList[currentIdx - 1] || null;
 
       await saveTicketGrade(currentId);
       grades[currentId].submitted = true;
+      grades[currentId].grader = user?.name || grades[currentId].grader || 'Bot';
+      grades[currentId].graderUserId = user?.id ?? grades[currentId].graderUserId ?? null;
+      locallyHiddenGradingTicketIds.add(String(currentId));
+      selectedIds.delete(String(currentId));
       editing = false;
       toast('Grade submitted and saved ✓');
-      await loadTicketsFromServer();
+      markTabsDirty();
+      renderQueueFilters();
 
-      // Auto-advance to next pending ticket
-      if (nextTicket) {
-        const refreshed = TICKETS.find(x => x.id === nextTicket.id);
-        sel = refreshed || null;
-      } else {
-        sel = TICKETS.find(x => x.id === currentId) || null;
-      }
+      // Auto-advance to the next pending ticket without reloading the whole list.
+      sel = nextTicket ? (TICKETS.find(x => x.id === nextTicket.id) || null) : null;
       renderList();
       renderDetail();
+      loadNotifications().catch(() => {});
     } catch (e) {
       toast(e.message || 'Save failed', 'err');
     }
@@ -3655,21 +3726,22 @@ function renderNewTickets() {
     </tr>`;
 
     tbody.innerHTML = pageData.items.map(t => {
-      const g = grades[t.id];
-      const aR = agentRaw(t.id);
+      const g = grades[t.id] || blankG();
+      const isSubmitted = !!g.submitted;
+      const aR = isSubmitted ? agentRaw(t.id) : null;
       const bR = botRaw(t);
-      const aD = agentDenom(t.id);
+      const aD = isSubmitted ? agentDenom(t.id) : null;
       const bD = botDenom(t);
-      const aP = pct(aR, aD);
+      const aP = isSubmitted ? pct(aR, aD) : null;
       const bP = pct(bR, bD);
-      const af = isAF(t.id);
-      const diff = aP - bP;
+      const af = isSubmitted ? isAF(t.id) : false;
+      const diff = isSubmitted ? aP - bP : null;
       const tWk = t.week || weekOf(t.date || t.createdTime);
       const convId = convIdFromFrontUrl(t.frontUrl);
       const assignMenu = graderOpts
         ? `<div class="assign-menu" style="position:relative;display:inline-block">
              <button class="bsm" type="button" data-assign-toggle="${t.id}">Assign</button>
-             <div class="assign-pop" data-assign-pop="${t.id}" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:20;min-width:220px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--bg2);box-shadow:0 16px 40px rgba(0,0,0,.16)">
+             <div class="assign-pop" data-assign-pop="${t.id}" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:20;min-width:220px;padding:10px;border:1px solid var(--bd2);border-radius:10px;background:var(--sf);box-shadow:0 16px 40px rgba(0,0,0,.16)">
                <select data-assign-select="${t.id}" style="width:100%;margin-bottom:8px">
                  <option value="">Select grader</option>
                  ${graderOpts}
@@ -3692,25 +3764,28 @@ function renderNewTickets() {
         <td class="cn">${bD}</td>
         <td class="cn">${bR}</td>
         <td><span class="schip" style="background:${bP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${scol(bP)}">${bP}%</span></td>
-        <td class="cn">${aD}</td>
-        <td class="cn">${aR}</td>
-        <td><span class="schip" style="background:${af ? 'var(--rds)' : aP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${af ? 'var(--rd)' : scol(aP)}">${af ? '0%' : aP + '%'}</span></td>
-        <td class="cn" style="color:${diff > 0 ? 'var(--gr)' : diff < 0 ? 'var(--rd)' : 'var(--mu)'}">${diff > 0 ? '+' : ''}${diff}%</td>
-        <td>${g.grader || user?.name || 'Bot'}</td>
+        <td class="cn">${isSubmitted ? aD : '—'}</td>
+        <td class="cn">${isSubmitted ? aR : '—'}</td>
+        <td>${isSubmitted
+          ? `<span class="schip" style="background:${af ? 'var(--rds)' : aP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${af ? 'var(--rd)' : scol(aP)}">${af ? '0%' : aP + '%'}</span>`
+          : `<span class="schip" style="background:var(--bg2);color:var(--mu)">Pending</span>`}</td>
+        <td class="cn" style="color:${diff > 0 ? 'var(--gr)' : diff < 0 ? 'var(--rd)' : 'var(--mu)'}">${diff == null ? '—' : `${diff > 0 ? '+' : ''}${diff}%`}</td>
+        <td>${isSubmitted ? (g.grader || user?.name || 'Bot') : '—'}</td>
         ${C.map(c => {
+          if (!isSubmitted) return `<td><span class="cn" style="color:var(--mu)">—</span></td><td class="cc">—</td>`;
           const v = g.scores[c.id];
           const p = isNA(v) ? null : pct(nv(v), c.max);
           const col = p === null ? 'var(--mu2)' : scol(p);
           return `<td><span class="cn" style="color:${col}">${isNA(v) ? 'NA' : nv(v)}</span></td><td class="cc">${finalCause(g, c.id)}</td>`;
         }).join('')}
-        <td style="color:${g.af.autofail ? 'var(--rd)' : 'var(--mu)'}">${g.af.autofail ? 'TRUE' : 'FALSE'}</td>
-        <td class="cc">${finalAFCause(g, 'autofail')}</td>
-        <td>${isNA(g.af.bug_esc) ? 'NA' : g.af.bug_esc}</td>
-        <td class="cc">${finalAFCause(g, 'bug_esc')}</td>
-        <td>${isNA(g.af.post_bug) ? 'NA' : g.af.post_bug}</td>
-        <td class="cc">${finalAFCause(g, 'post_bug')}</td>
-        <td class="cc">${g.qaFeedback || ''}</td>
-        <td class="cc">${g.reflection || ''}</td>
+        <td style="color:${isSubmitted && g.af.autofail ? 'var(--rd)' : 'var(--mu)'}">${isSubmitted ? (g.af.autofail ? 'TRUE' : 'FALSE') : '—'}</td>
+        <td class="cc">${isSubmitted ? finalAFCause(g, 'autofail') : '—'}</td>
+        <td>${isSubmitted ? (isNA(g.af.bug_esc) ? 'NA' : g.af.bug_esc) : '—'}</td>
+        <td class="cc">${isSubmitted ? finalAFCause(g, 'bug_esc') : '—'}</td>
+        <td>${isSubmitted ? (isNA(g.af.post_bug) ? 'NA' : g.af.post_bug) : '—'}</td>
+        <td class="cc">${isSubmitted ? finalAFCause(g, 'post_bug') : '—'}</td>
+        <td class="cc">${isSubmitted ? (g.qaFeedback || '') : '—'}</td>
+        <td class="cc">${isSubmitted ? (g.reflection || '') : '—'}</td>
         <td><button class="bsm" onclick="deleteTicketFromTable('${t.id}')">Delete</button></td>
       </tr>`;
     }).join('');
