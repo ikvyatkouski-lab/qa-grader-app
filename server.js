@@ -259,10 +259,14 @@ async function ensureSchema() {
       inbox text,
       ticket_date date,
       week text,
-      front_url text,
+      front_url text UNIQUE,
+      created_time text,
+      source_file_name text,
+      imported_by_user_id integer REFERENCES users(id),
       bot_payload jsonb,
       imported_at timestamptz NOT NULL DEFAULT NOW(),
-      deleted_at timestamptz
+      deleted_at timestamptz,
+      deleted_by_user_id integer REFERENCES users(id)
     )
   `);
 
