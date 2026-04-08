@@ -327,6 +327,7 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS source_file_name text`);
   await pool.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS imported_by_user_id integer REFERENCES users(id)`);
   await pool.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS deleted_by_user_id integer REFERENCES users(id)`);
+  await pool.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_grader text`);
 
   // Indexes
   await pool.query(`CREATE INDEX IF NOT EXISTS tickets_agent_idx ON tickets (agent)`);
@@ -997,6 +998,293 @@ async function bulkUpsertGrades(client, gradeRows, graderUserId) {
 
   return normalizedRows.map(row => existingByTicketId.get(String(row.ticket_id)));
 }
+
+app.get('/api/home', requireAuth, async (req, res) => {
+  try {
+    const u = req.session.user;
+    const role = u.role;
+
+    // Current and previous week Monday dates
+    const now = new Date();
+    const dayOfWeek = (now.getDay() + 6) % 7; // Mon=0
+    const thisMonday = new Date(now); thisMonday.setDate(now.getDate() - dayOfWeek); thisMonday.setHours(0,0,0,0);
+    const lastMonday = new Date(thisMonday); lastMonday.setDate(thisMonday.getDate() - 7);
+    const nextMonday = new Date(thisMonday); nextMonday.setDate(thisMonday.getDate() + 7);
+    const twoMondaysAgo = new Date(lastMonday); twoMondaysAgo.setDate(lastMonday.getDate() - 7);
+
+    const thisWeekFrom = thisMonday.toISOString().slice(0,10);
+    const thisWeekTo   = nextMonday.toISOString().slice(0,10);
+    const lastWeekFrom = lastMonday.toISOString().slice(0,10);
+    const lastWeekTo   = thisMonday.toISOString().slice(0,10);
+
+    if (role === 'agent') {
+      const agentKey = currentAgentKey(u);
+
+      const [newCount, weekScore, lastWeekScore, worstCat, teamRank] = await Promise.all([
+        // New unread tickets
+        pool.query(`
+          SELECT COUNT(*) AS cnt FROM tickets t
+          JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE AND g.agent_acknowledged_at IS NULL
+            AND ${AGENT_KEY_SQL} = $1`, [agentKey]),
+
+        // This week avg score
+        pool.query(`
+          SELECT ROUND(AVG(g.total_percent)) AS avg_score, COUNT(*) AS cnt
+          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE AND ${AGENT_KEY_SQL} = $1
+            AND t.ticket_date >= $2 AND t.ticket_date < $3`, [agentKey, thisWeekFrom, thisWeekTo]),
+
+        // Last week avg score
+        pool.query(`
+          SELECT ROUND(AVG(g.total_percent)) AS avg_score
+          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE AND ${AGENT_KEY_SQL} = $1
+            AND t.ticket_date >= $2 AND t.ticket_date < $3`, [agentKey, lastWeekFrom, lastWeekTo]),
+
+        // Worst category this week
+        pool.query(`
+          SELECT gb.category_id, ROUND(AVG(
+            CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric ELSE NULL END
+          )) AS avg_score
+          FROM tickets t
+          JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          JOIN grade_breakdown gb ON gb.grade_id = g.id
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE AND ${AGENT_KEY_SQL} = $1
+            AND t.ticket_date >= $2 AND t.ticket_date < $3
+          GROUP BY gb.category_id
+          ORDER BY avg_score ASC NULLS LAST LIMIT 1`, [agentKey, thisWeekFrom, thisWeekTo]),
+
+        // Rank among team this week
+        pool.query(`
+          WITH scores AS (
+            SELECT ${AGENT_KEY_SQL} AS akey, ROUND(AVG(g.total_percent)) AS avg
+            FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+            WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+              AND t.ticket_date >= $1 AND t.ticket_date < $2
+            GROUP BY akey
+          )
+          SELECT COUNT(*) AS total,
+            (SELECT COUNT(*)+1 FROM scores WHERE avg > (SELECT avg FROM scores WHERE akey=$3)) AS rank
+          FROM scores`, [thisWeekFrom, thisWeekTo, agentKey])
+      ]);
+
+      return res.json({
+        role,
+        new_tickets_count: parseInt(newCount.rows[0]?.cnt || 0),
+        week_score: weekScore.rows[0]?.avg_score ?? null,
+        week_ticket_count: parseInt(weekScore.rows[0]?.cnt || 0),
+        last_week_score: lastWeekScore.rows[0]?.avg_score ?? null,
+        worst_category: worstCat.rows[0] || null,
+        rank: parseInt(teamRank.rows[0]?.rank || 0),
+        rank_total: parseInt(teamRank.rows[0]?.total || 0)
+      });
+    }
+
+    if (role === 'qa_grader') {
+      const graderName = u.username;
+
+      const [pending, weekTeam, lastWeekTeam, worstCat, bestCat, topInbox] = await Promise.all([
+        // Tickets pending grading assigned to this grader
+        pool.query(`
+          SELECT COUNT(*) AS cnt FROM tickets t
+          LEFT JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND (g.id IS NULL OR g.submitted = FALSE)
+            AND t.assigned_grader = $1`, [graderName]),
+
+        // Team avg score this week
+        pool.query(`
+          SELECT ROUND(AVG(g.total_percent)) AS avg_score, COUNT(*) AS cnt
+          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND t.ticket_date >= $1 AND t.ticket_date < $2`, [thisWeekFrom, thisWeekTo]),
+
+        // Team avg last week
+        pool.query(`
+          SELECT ROUND(AVG(g.total_percent)) AS avg_score
+          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND t.ticket_date >= $1 AND t.ticket_date < $2`, [lastWeekFrom, lastWeekTo]),
+
+        // Worst category this week
+        pool.query(`
+          SELECT gb.category_id, ROUND(AVG(
+            CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric ELSE NULL END
+          )) AS avg_score
+          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          JOIN grade_breakdown gb ON gb.grade_id = g.id
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND t.ticket_date >= $1 AND t.ticket_date < $2
+          GROUP BY gb.category_id ORDER BY avg_score ASC NULLS LAST LIMIT 1`, [thisWeekFrom, thisWeekTo]),
+
+        // Best category this week
+        pool.query(`
+          SELECT gb.category_id, ROUND(AVG(
+            CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric ELSE NULL END
+          )) AS avg_score
+          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          JOIN grade_breakdown gb ON gb.grade_id = g.id
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND t.ticket_date >= $1 AND t.ticket_date < $2
+          GROUP BY gb.category_id ORDER BY avg_score DESC NULLS LAST LIMIT 1`, [thisWeekFrom, thisWeekTo]),
+
+        // Top inbox this week by ticket count
+        pool.query(`
+          SELECT t.inbox, COUNT(*) AS cnt FROM tickets t
+          JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND t.ticket_date >= $1 AND t.ticket_date < $2
+          GROUP BY t.inbox ORDER BY cnt DESC LIMIT 1`, [thisWeekFrom, thisWeekTo])
+      ]);
+
+      // Last week top inbox for comparison
+      const lastTopInbox = topInbox.rows[0]?.inbox ? await pool.query(`
+        SELECT COUNT(*) AS cnt FROM tickets t
+        JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+        WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+          AND t.ticket_date >= $1 AND t.ticket_date < $2 AND t.inbox = $3`,
+        [lastWeekFrom, lastWeekTo, topInbox.rows[0].inbox]) : { rows: [{ cnt: 0 }] };
+
+      // Last week categories for comparison
+      const lastWorstCat = worstCat.rows[0]?.category_id ? await pool.query(`
+        SELECT ROUND(AVG(CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric ELSE NULL END)) AS avg_score
+        FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+        JOIN grade_breakdown gb ON gb.grade_id = g.id
+        WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+          AND t.ticket_date >= $1 AND t.ticket_date < $2 AND gb.category_id = $3`,
+        [lastWeekFrom, lastWeekTo, worstCat.rows[0].category_id]) : { rows: [{}] };
+
+      const lastBestCat = bestCat.rows[0]?.category_id ? await pool.query(`
+        SELECT ROUND(AVG(CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric ELSE NULL END)) AS avg_score
+        FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+        JOIN grade_breakdown gb ON gb.grade_id = g.id
+        WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+          AND t.ticket_date >= $1 AND t.ticket_date < $2 AND gb.category_id = $3`,
+        [lastWeekFrom, lastWeekTo, bestCat.rows[0].category_id]) : { rows: [{}] };
+
+      return res.json({
+        role,
+        pending_grading: parseInt(pending.rows[0]?.cnt || 0),
+        week_team_score: weekTeam.rows[0]?.avg_score ?? null,
+        week_ticket_count: parseInt(weekTeam.rows[0]?.cnt || 0),
+        last_week_team_score: lastWeekTeam.rows[0]?.avg_score ?? null,
+        worst_category: worstCat.rows[0] || null,
+        worst_category_last_week: lastWorstCat.rows[0]?.avg_score ?? null,
+        best_category: bestCat.rows[0] || null,
+        best_category_last_week: lastBestCat.rows[0]?.avg_score ?? null,
+        top_inbox: topInbox.rows[0] || null,
+        top_inbox_last_week_count: parseInt(lastTopInbox.rows[0]?.cnt || 0)
+      });
+    }
+
+    if (['cs_leader', 'admin'].includes(role)) {
+      const [userCount, activeSessionCount, recentLogs, weekTeam, lastWeekTeam, worstCat, bestCat, topInbox, unassigned] = await Promise.all([
+        pool.query(`SELECT COUNT(*) AS cnt FROM users WHERE is_active = TRUE`),
+        pool.query(`SELECT COUNT(*) AS cnt FROM session`),
+        pool.query(`SELECT username, role, action, details, created_at FROM user_logs ORDER BY created_at DESC LIMIT 5`),
+
+        pool.query(`
+          SELECT ROUND(AVG(g.total_percent)) AS avg_score, COUNT(*) AS cnt
+          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND t.ticket_date >= $1 AND t.ticket_date < $2`, [thisWeekFrom, thisWeekTo]),
+
+        pool.query(`
+          SELECT ROUND(AVG(g.total_percent)) AS avg_score
+          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND t.ticket_date >= $1 AND t.ticket_date < $2`, [lastWeekFrom, lastWeekTo]),
+
+        pool.query(`
+          SELECT gb.category_id, ROUND(AVG(
+            CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric ELSE NULL END
+          )) AS avg_score
+          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          JOIN grade_breakdown gb ON gb.grade_id = g.id
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND t.ticket_date >= $1 AND t.ticket_date < $2
+          GROUP BY gb.category_id ORDER BY avg_score ASC NULLS LAST LIMIT 1`, [thisWeekFrom, thisWeekTo]),
+
+        pool.query(`
+          SELECT gb.category_id, ROUND(AVG(
+            CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric ELSE NULL END
+          )) AS avg_score
+          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          JOIN grade_breakdown gb ON gb.grade_id = g.id
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND t.ticket_date >= $1 AND t.ticket_date < $2
+          GROUP BY gb.category_id ORDER BY avg_score DESC NULLS LAST LIMIT 1`, [thisWeekFrom, thisWeekTo]),
+
+        pool.query(`
+          SELECT t.inbox, COUNT(*) AS cnt FROM tickets t
+          JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND t.ticket_date >= $1 AND t.ticket_date < $2
+          GROUP BY t.inbox ORDER BY cnt DESC LIMIT 1`, [thisWeekFrom, thisWeekTo]),
+
+        // Unassigned tickets with score < 60%
+        pool.query(`
+          SELECT t.id, t.subject, t.agent, t.inbox, t.ticket_date, t.week,
+            g.total_percent, g.grader_name
+          FROM tickets t
+          JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND (t.assigned_grader IS NULL OR t.assigned_grader = '')
+            AND g.total_percent < 60
+          ORDER BY t.ticket_date DESC LIMIT 100`)
+      ]);
+
+      const lastTopInbox = topInbox.rows[0]?.inbox ? await pool.query(`
+        SELECT COUNT(*) AS cnt FROM tickets t
+        JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+        WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+          AND t.ticket_date >= $1 AND t.ticket_date < $2 AND t.inbox = $3`,
+        [lastWeekFrom, lastWeekTo, topInbox.rows[0].inbox]) : { rows: [{ cnt: 0 }] };
+
+      const lastWorstCat = worstCat.rows[0]?.category_id ? await pool.query(`
+        SELECT ROUND(AVG(CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric ELSE NULL END)) AS avg_score
+        FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+        JOIN grade_breakdown gb ON gb.grade_id = g.id
+        WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+          AND t.ticket_date >= $1 AND t.ticket_date < $2 AND gb.category_id = $3`,
+        [lastWeekFrom, lastWeekTo, worstCat.rows[0].category_id]) : { rows: [{}] };
+
+      const lastBestCat = bestCat.rows[0]?.category_id ? await pool.query(`
+        SELECT ROUND(AVG(CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric ELSE NULL END)) AS avg_score
+        FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+        JOIN grade_breakdown gb ON gb.grade_id = g.id
+        WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+          AND t.ticket_date >= $1 AND t.ticket_date < $2 AND gb.category_id = $3`,
+        [lastWeekFrom, lastWeekTo, bestCat.rows[0].category_id]) : { rows: [{}] };
+
+      // Available graders for assignment
+      const graders = await pool.query(`SELECT id, username, email FROM users WHERE role = 'qa_grader' AND is_active = TRUE ORDER BY username`);
+
+      return res.json({
+        role,
+        user_count: parseInt(userCount.rows[0]?.cnt || 0),
+        active_sessions: parseInt(activeSessionCount.rows[0]?.cnt || 0),
+        recent_logs: recentLogs.rows,
+        week_team_score: weekTeam.rows[0]?.avg_score ?? null,
+        week_ticket_count: parseInt(weekTeam.rows[0]?.cnt || 0),
+        last_week_team_score: lastWeekTeam.rows[0]?.avg_score ?? null,
+        worst_category: worstCat.rows[0] || null,
+        worst_category_last_week: lastWorstCat.rows[0]?.avg_score ?? null,
+        best_category: bestCat.rows[0] || null,
+        best_category_last_week: lastBestCat.rows[0]?.avg_score ?? null,
+        top_inbox: topInbox.rows[0] || null,
+        top_inbox_last_week_count: parseInt(lastTopInbox.rows[0]?.cnt || 0),
+        unassigned_low_score: unassigned.rows,
+        available_graders: graders.rows
+      });
+    }
+
+    res.json({ role });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 app.get('/api/health', async (req, res) => {
   try {
@@ -1772,6 +2060,8 @@ app.post('/api/tickets/import', requireAuth, async (req, res) => {
       const inbox = cleanImportValue(t.inbox);
       const subject = cleanImportValue(t.subject);
       const frontUrl = cleanImportValue(t.front_url) ? String(t.front_url).trim() : null;
+      // Grader column (e.g. "Andi") → normalize to username for assignment
+      const assignedGrader = cleanImportValue(t.assigned_grader) || null;
       const existing = frontUrl
         ? await client.query(
             `SELECT id
@@ -1796,6 +2086,7 @@ app.post('/api/tickets/import', requireAuth, async (req, res) => {
                subject = $7,
                source_file_name = $8,
                bot_payload = $9,
+               assigned_grader = COALESCE($11, assigned_grader),
                deleted_at = NULL,
                deleted_by_user_id = NULL
            WHERE id = $10
@@ -1810,7 +2101,8 @@ app.post('/api/tickets/import', requireAuth, async (req, res) => {
             subject,
             cleanImportValue(source_file_name),
             t.bot_payload || {},
-            existing.rows[0].id
+            existing.rows[0].id,
+            assignedGrader
           ]
         );
         ticketId = updated.rows[0].id;
@@ -1827,9 +2119,10 @@ app.post('/api/tickets/import', requireAuth, async (req, res) => {
               subject,
               source_file_name,
               imported_by_user_id,
-              bot_payload
+              bot_payload,
+              assigned_grader
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
             RETURNING id`,
             [
               week,
@@ -1841,7 +2134,8 @@ app.post('/api/tickets/import', requireAuth, async (req, res) => {
               subject,
               cleanImportValue(source_file_name),
               req.session.user.id,
-              t.bot_payload || {}
+              t.bot_payload || {},
+              assignedGrader
             ]
           );
           ticketId = inserted.rows[0].id;
@@ -1903,6 +2197,23 @@ app.post('/api/tickets/import', requireAuth, async (req, res) => {
     res.status(500).json({ error: error.message });
   } finally {
     client.release();
+  }
+});
+
+// Assign grader to one or more tickets (CS Leader / Admin only)
+app.post('/api/tickets/assign', requireUserMgmt, async (req, res) => {
+  try {
+    const { ticket_ids, grader_username } = req.body;
+    if (!Array.isArray(ticket_ids) || !ticket_ids.length) return res.status(400).json({ error: 'ticket_ids required' });
+    await pool.query(
+      `UPDATE tickets SET assigned_grader = $1 WHERE id = ANY($2::bigint[])`,
+      [grader_username || null, ticket_ids]
+    );
+    logAction(req, 'tickets_assigned', { count: ticket_ids.length, grader: grader_username });
+    res.json({ ok: true, count: ticket_ids.length });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
   }
 });
 

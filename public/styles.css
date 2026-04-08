@@ -425,6 +425,37 @@ table.dt tbody tr:hover{background:var(--sf2)}
 .tdm-open{padding:4px 10px;background:transparent;border:1px solid var(--bd2);border-radius:5px;font-size:11px;color:var(--mu);cursor:pointer;font-family:var(--fn);transition:all .15s}
 .tdm-open:hover{color:var(--tx);background:var(--sf2)}
 
+/* ── Homepage ─────────────────────────────────────────────────────────── */
+#vh{overflow-y:auto}
+.home-wrap{padding:28px 32px;max-width:1200px;margin:0 auto}
+.home-loading{color:var(--mu);padding:40px;text-align:center}
+.home-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:18px}
+.home-card{background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:20px 22px;display:flex;flex-direction:column;gap:8px}
+.home-card-wide{grid-column:1/-1}
+.home-card-accent{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac)}
+.home-card-title{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--mu)}
+.home-card-body{display:flex;flex-direction:column;gap:6px}
+.home-big{font-size:36px;font-weight:700;line-height:1;font-family:var(--mo)}
+.home-sub{font-size:12px;color:var(--mu)}
+.home-cat-label{font-size:13px;font-weight:600;color:var(--tx)}
+.home-trend{font-size:11px;font-weight:600;margin-left:6px}
+.home-trend.up{color:var(--gr)}
+.home-trend.dn{color:var(--rd)}
+.home-trend.eq{color:var(--mu)}
+.home-action-btn{margin-top:8px;align-self:flex-start}
+.home-log-row{display:flex;gap:10px;font-size:12px;padding:5px 0;border-bottom:1px solid var(--bd)}
+.home-log-row:last-child{border-bottom:none}
+.home-log-user{font-weight:600;color:var(--tx);min-width:90px}
+.home-log-action{color:var(--ac);flex:1}
+.home-log-time{color:var(--mu);white-space:nowrap}
+.home-assign-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.home-assign-bar select{padding:5px 8px;border-radius:6px;border:1px solid var(--bd2);background:var(--sf2);color:var(--tx);font-size:12px;font-family:var(--fn)}
+.home-table-wrap{overflow-x:auto;max-height:360px;overflow-y:auto}
+.home-assign-table{width:100%;border-collapse:collapse;font-size:12px}
+.home-assign-table th{text-align:left;padding:6px 10px;border-bottom:1px solid var(--bd2);color:var(--mu);font-weight:600;position:sticky;top:0;background:var(--sf)}
+.home-assign-table td{padding:6px 10px;border-bottom:1px solid var(--bd)}
+.home-assign-table tr:hover td{background:var(--sf2)}
+
 @media (max-width: 1300px){
   .tnav{height:auto;flex-wrap:wrap;padding:8px 18px;gap:6px}
   .tnav-l{flex:1 1 auto;flex-wrap:wrap;min-width:0}

@@ -297,8 +297,8 @@ let grades = {};
 let filter = 'all';
 
 // Dirty flags — tabs only re-render when data has changed since last visit
-const tabDirty = { s: true, n: true, m: true, a: true, u: true, l: true };
-function markTabsDirty() { Object.keys(tabDirty).forEach(k => { tabDirty[k] = true; }); }
+const tabDirty = { h: true, s: true, n: true, m: true, a: true, u: true, l: true };
+function markTabsDirty() { Object.keys(tabDirty).forEach(k => { tabDirty[k] = true; }); tabDirty.h = true; }
 let ticketsLoading = false;
 let editing = false;
 let selectedIds = new Set();
@@ -1117,7 +1117,8 @@ function buildServerTicket(t, gradePayload = null){
     inbox: t.inbox || null,
     front_url: t.frontUrl || null,
     subject: t.subject || null,
-    bot_payload: t.bot || {}
+    bot_payload: t.bot || {},
+    assigned_grader: t.grader && t.grader.toLowerCase() !== 'bot' ? t.grader : null
   };
 
   if (gradePayload) ticket.grade_payload = gradePayload;
@@ -1424,12 +1425,15 @@ function applyRoleUI() {
   const notifMenu = document.getElementById('notif-menu');
   if (notifMenu) notifMenu.style.display = user ? '' : 'none';
 
-  // For agents: switch default view to "New Tickets"
+  // All roles land on Home
+  document.querySelectorAll('.tab').forEach(b => b.classList.remove('on'));
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
+  document.querySelector('.tab[data-tab="h"]')?.classList.add('on');
+  document.getElementById('vh')?.classList.add('on');
+  renderHome();
+  tabDirty.h = false;
+
   if (isAgent) {
-    document.querySelectorAll('.tab').forEach(b => b.classList.remove('on'));
-    document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
-    document.querySelector('.tab[data-tab="n"]')?.classList.add('on');
-    document.getElementById('vn')?.classList.add('on');
     renderNewTickets();
     renderMyFilters();
     renderMyTickets();
@@ -1794,6 +1798,208 @@ function formatLogDetails(details) {
     .join(' &nbsp;·&nbsp; ') || '—';
 }
 
+// ── Homepage ──────────────────────────────────────────────────────────────
+const CAT_LABELS = Object.fromEntries([...C, ...AFS].map(c => [c.id, c.label]));
+
+function scoreTrend(cur, prev) {
+  if (cur == null || prev == null) return '';
+  const diff = Math.round(cur - prev);
+  if (diff > 0) return `<span class="home-trend up">▲ ${diff}%</span>`;
+  if (diff < 0) return `<span class="home-trend dn">▼ ${Math.abs(diff)}%</span>`;
+  return `<span class="home-trend eq">→ same</span>`;
+}
+
+function homeCard(title, body, opts = {}) {
+  return `<div class="home-card${opts.wide ? ' home-card-wide' : ''}${opts.accent ? ' home-card-accent' : ''}">
+    <div class="home-card-title">${title}</div>
+    <div class="home-card-body">${body}</div>
+  </div>`;
+}
+
+async function renderHome() {
+  const wrap = document.getElementById('home-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="home-loading">Loading…</div>';
+
+  let d;
+  try {
+    const r = await fetch(`${API_BASE}/api/home`, { credentials: 'include' });
+    if (!r.ok) throw new Error(await r.text());
+    d = await r.json();
+  } catch (e) {
+    wrap.innerHTML = `<div class="home-loading">Failed to load dashboard</div>`;
+    return;
+  }
+
+  const role = d.role;
+  let cards = '';
+
+  if (role === 'agent') {
+    const scoreColor = d.week_score != null ? scol(d.week_score) : 'var(--mu)';
+    cards += homeCard('New Tickets',
+      `<div class="home-big" style="color:${d.new_tickets_count > 0 ? 'var(--ac)' : 'var(--mu)'}">${d.new_tickets_count}</div>
+       <div class="home-sub">unread graded tickets</div>
+       ${d.new_tickets_count > 0 ? `<button class="btn-p home-action-btn" id="home-go-new">View tickets</button>` : ''}`,
+      { accent: d.new_tickets_count > 0 });
+
+    cards += homeCard('My Score This Week',
+      `<div class="home-big" style="color:${scoreColor}">${d.week_score != null ? d.week_score + '%' : '—'}</div>
+       <div class="home-sub">${d.week_ticket_count} ticket${d.week_ticket_count !== 1 ? 's' : ''} graded ${scoreTrend(d.week_score, d.last_week_score)}</div>`);
+
+    if (d.worst_category) {
+      const catLabel = CAT_LABELS[d.worst_category.category_id] || d.worst_category.category_id;
+      cards += homeCard('Needs Attention',
+        `<div class="home-cat-label">${escapeHtml(catLabel)}</div>
+         <div class="home-big" style="color:var(--rd)">${d.worst_category.avg_score != null ? d.worst_category.avg_score + '%' : '—'}</div>
+         <div class="home-sub">lowest avg score this week</div>`);
+    }
+
+    cards += homeCard('Team Rank',
+      `<div class="home-big">#${d.rank || '—'}</div>
+       <div class="home-sub">out of ${d.rank_total} agents this week</div>`);
+  }
+
+  if (role === 'qa_grader') {
+    cards += homeCard('To Grade',
+      `<div class="home-big" style="color:${d.pending_grading > 0 ? 'var(--am)' : 'var(--gr)'}">${d.pending_grading}</div>
+       <div class="home-sub">tickets assigned to you pending grading</div>
+       ${d.pending_grading > 0 ? `<button class="btn-p home-action-btn" id="home-go-grading">Go to queue</button>` : ''}`);
+
+    cards += homeCard('Team Score This Week',
+      `<div class="home-big">${d.week_team_score != null ? d.week_team_score + '%' : '—'}</div>
+       <div class="home-sub">${d.week_ticket_count} tickets ${scoreTrend(d.week_team_score, d.last_week_team_score)}</div>`);
+
+    if (d.worst_category) {
+      cards += homeCard('Worst Category',
+        `<div class="home-cat-label">${escapeHtml(CAT_LABELS[d.worst_category.category_id] || d.worst_category.category_id)}</div>
+         <div class="home-big" style="color:var(--rd)">${d.worst_category.avg_score != null ? d.worst_category.avg_score + '%' : '—'}</div>
+         <div class="home-sub">vs last week ${scoreTrend(d.worst_category.avg_score, d.worst_category_last_week)}</div>`);
+    }
+
+    if (d.best_category) {
+      cards += homeCard('Best Category',
+        `<div class="home-cat-label">${escapeHtml(CAT_LABELS[d.best_category.category_id] || d.best_category.category_id)}</div>
+         <div class="home-big" style="color:var(--gr)">${d.best_category.avg_score != null ? d.best_category.avg_score + '%' : '—'}</div>
+         <div class="home-sub">vs last week ${scoreTrend(d.best_category.avg_score, d.best_category_last_week)}</div>`);
+    }
+
+    if (d.top_inbox) {
+      cards += homeCard('Busiest Inbox',
+        `<div class="home-cat-label">${escapeHtml(d.top_inbox.inbox || '—')}</div>
+         <div class="home-big">${d.top_inbox.cnt}</div>
+         <div class="home-sub">tickets this week · last week: ${d.top_inbox_last_week_count}</div>`);
+    }
+  }
+
+  if (['cs_leader', 'admin'].includes(role)) {
+    cards += homeCard('Team Score This Week',
+      `<div class="home-big">${d.week_team_score != null ? d.week_team_score + '%' : '—'}</div>
+       <div class="home-sub">${d.week_ticket_count} tickets ${scoreTrend(d.week_team_score, d.last_week_team_score)}</div>`);
+
+    if (d.worst_category) {
+      cards += homeCard('Worst Category',
+        `<div class="home-cat-label">${escapeHtml(CAT_LABELS[d.worst_category.category_id] || d.worst_category.category_id)}</div>
+         <div class="home-big" style="color:var(--rd)">${d.worst_category.avg_score != null ? d.worst_category.avg_score + '%' : '—'}</div>
+         <div class="home-sub">vs last week ${scoreTrend(d.worst_category.avg_score, d.worst_category_last_week)}</div>`);
+    }
+
+    if (d.best_category) {
+      cards += homeCard('Best Category',
+        `<div class="home-cat-label">${escapeHtml(CAT_LABELS[d.best_category.category_id] || d.best_category.category_id)}</div>
+         <div class="home-big" style="color:var(--gr)">${d.best_category.avg_score != null ? d.best_category.avg_score + '%' : '—'}</div>
+         <div class="home-sub">vs last week ${scoreTrend(d.best_category.avg_score, d.best_category_last_week)}</div>`);
+    }
+
+    if (d.top_inbox) {
+      cards += homeCard('Busiest Inbox',
+        `<div class="home-cat-label">${escapeHtml(d.top_inbox.inbox || '—')}</div>
+         <div class="home-big">${d.top_inbox.cnt}</div>
+         <div class="home-sub">tickets this week · last week: ${d.top_inbox_last_week_count}</div>`);
+    }
+
+    cards += homeCard('Users',
+      `<div class="home-big">${d.user_count}</div>
+       <div class="home-sub">${d.active_sessions} active session${d.active_sessions !== 1 ? 's' : ''}</div>`);
+
+    // Recent logs card
+    const logRows = (d.recent_logs || []).map(l =>
+      `<div class="home-log-row">
+        <span class="home-log-user">${escapeHtml(l.username || '—')}</span>
+        <span class="home-log-action">${escapeHtml(l.action)}</span>
+        <span class="home-log-time">${new Date(l.created_at).toLocaleString()}</span>
+      </div>`
+    ).join('');
+    cards += homeCard('Recent Activity', logRows || '<span style="color:var(--mu)">No activity yet</span>', { wide: true });
+
+    // Unassigned low-score tickets
+    if (role === 'cs_leader' && (d.unassigned_low_score || []).length > 0) {
+      const graderOpts = (d.available_graders || []).map(g =>
+        `<option value="${escapeHtml(g.username)}">${escapeHtml(g.username)}</option>`
+      ).join('');
+
+      const rows = d.unassigned_low_score.map(t =>
+        `<tr>
+          <td><input type="checkbox" class="home-assign-chk" data-tid="${t.id}"></td>
+          <td>${escapeHtml(t.subject || '—')}</td>
+          <td>${escapeHtml(t.agent || '—')}</td>
+          <td>${escapeHtml(t.inbox || '—')}</td>
+          <td>${fmtDate(t.ticket_date)}</td>
+          <td style="color:var(--rd)">${t.total_percent != null ? t.total_percent + '%' : '—'}</td>
+        </tr>`
+      ).join('');
+
+      cards += `<div class="home-card home-card-wide">
+        <div class="home-card-title">Needs Review — Score &lt; 60% (Unassigned)</div>
+        <div class="home-card-body">
+          <div class="home-assign-bar">
+            <label><input type="checkbox" id="home-assign-all"> Select all</label>
+            <select id="home-assign-grader"><option value="">— assign to grader —</option>${graderOpts}</select>
+            <button class="btn-p" id="home-assign-btn">Assign</button>
+          </div>
+          <div class="home-table-wrap">
+            <table class="home-assign-table">
+              <thead><tr><th></th><th>Subject</th><th>Agent</th><th>Inbox</th><th>Date</th><th>Score</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>`;
+    }
+  }
+
+  wrap.innerHTML = `<div class="home-grid">${cards}</div>`;
+
+  // Wire up buttons
+  document.getElementById('home-go-new')?.addEventListener('click', () => switchTab('n'));
+  document.getElementById('home-go-grading')?.addEventListener('click', () => switchTab('g'));
+
+  // Select all checkbox
+  document.getElementById('home-assign-all')?.addEventListener('change', function() {
+    wrap.querySelectorAll('.home-assign-chk').forEach(c => { c.checked = this.checked; });
+  });
+
+  // Assign button
+  document.getElementById('home-assign-btn')?.addEventListener('click', async () => {
+    const grader = document.getElementById('home-assign-grader')?.value;
+    if (!grader) { toast('Select a grader first', 'err'); return; }
+    const ids = [...wrap.querySelectorAll('.home-assign-chk:checked')].map(c => Number(c.dataset.tid));
+    if (!ids.length) { toast('Select at least one ticket', 'err'); return; }
+    try {
+      const r = await fetch(`${API_BASE}/api/tickets/assign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ ticket_ids: ids, grader_username: grader })
+      });
+      if (!r.ok) throw new Error((await r.json()).error);
+      toast(`Assigned ${ids.length} ticket${ids.length !== 1 ? 's' : ''} to ${grader} ✓`);
+      await renderHome();
+    } catch (e) {
+      toast(e.message || 'Assign failed', 'err');
+    }
+  });
+}
+
 async function renderLogs() {
   const tbody = document.getElementById('logs-tbody');
   const countEl = document.getElementById('logs-count');
@@ -1982,6 +2188,7 @@ function switchTab(t) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
   document.getElementById('v' + t)?.classList.add('on');
 
+  if (t === 'h') { renderHome(); tabDirty.h = false; }
   if (t === 's') { if (tabDirty.s) { renderSubsFilters(); renderSubs(); tabDirty.s = false; } }
   if (t === 'n') { if (tabDirty.n) { renderNewTickets(); tabDirty.n = false; } }
   if (t === 'm') { if (tabDirty.m) { renderMyFilters(); renderMyTickets(); tabDirty.m = false; } }
@@ -2462,7 +2669,6 @@ function renderSubsFilters() {
   const weeks   = uniq(submitted.map(t => t.week));
   const inboxes = uniq(submitted.map(t => t.inbox));
   const agents  = canSeeAgent ? uniq(submitted.map(t => t.agent)) : [];
-  const cats    = ANALYTICS_CATEGORY_OPTIONS.map(item => ({ value: item.id, label: item.label }));
   const graders = uniq(submitted.map(t => grades[t.id]?.grader).filter(Boolean));
   const checkGroup = (label, key, options, selectedValues) => {
     if (!options.length) return '';
@@ -2479,7 +2685,6 @@ function renderSubsFilters() {
   const textOptions = values => values.map(value => ({ value, label: value }));
 
   cont.innerHTML = `<div class="hfbar">
-    ${checkGroup('Category', 'categories', cats, SF.categories)}
     ${checkGroup('Inbox', 'inboxes', textOptions(inboxes), SF.inboxes)}
     ${canSeeAgent ? checkGroup('Agent', 'agents', textOptions(agents), SF.agents) : ''}
     ${checkGroup('Week', 'weeks', textOptions(weeks), SF.weeks)}
