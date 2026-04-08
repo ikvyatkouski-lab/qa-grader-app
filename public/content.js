@@ -323,6 +323,7 @@ let bulkGradeImportSupported = null;
 let notifications = { count: 0, items: [] };
 let currentDetailTicketId = null;
 let currentDetailOptions = {};
+let availableGraders = [];
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500];
 let pagination = {
   grading: { page: 1, pageSize: 50 },
@@ -445,6 +446,46 @@ function blankG(){
   });
 
   return g;
+}
+
+function currentGraderKeys() {
+  return [...new Set(
+    [user?.name, user?.email]
+      .map(value => String(value || '').trim().toLowerCase())
+      .filter(Boolean)
+  )];
+}
+
+function isAssignedToCurrentGrader(ticket) {
+  if (user?.role !== 'qa_grader') return false;
+  const assigned = String(ticket?.assignedGrader || '').trim().toLowerCase();
+  return !!assigned && currentGraderKeys().includes(assigned);
+}
+
+function isGradedByCurrentGrader(ticketId) {
+  if (user?.role !== 'qa_grader') return false;
+  const g = grades[String(ticketId)];
+  if (!g?.submitted) return false;
+  if (g.graderUserId != null && user?.id != null && Number(g.graderUserId) === Number(user.id)) return true;
+  const graderName = String(g.grader || '').trim().toLowerCase();
+  return !!graderName && currentGraderKeys().includes(graderName);
+}
+
+function graderVisibleTickets(tickets = TICKETS) {
+  if (user?.role !== 'qa_grader') return tickets;
+  return tickets.filter(ticket => isAssignedToCurrentGrader(ticket) || isGradedByCurrentGrader(ticket.id));
+}
+
+function reviewAssignmentTickets(tickets = TICKETS) {
+  return tickets.filter(ticket => {
+    const g = grades[String(ticket.id)];
+    const score = metricNumber(g?.totalPercent);
+    return !!g?.submitted
+      && !ticket.assignedGrader
+      && score != null
+      && score <= 60
+      && !isBeforeCutoff(ticket.date || '');
+  });
 }
 
 function nv(v){
@@ -1394,6 +1435,7 @@ function applyRoleUI() {
   const role = user?.role;
   const isAgent    = role === 'agent';
   const isQaGrader = role === 'qa_grader';
+  const isCsLeader = role === 'cs_leader';
   const canAdmin   = ['admin', 'cs_leader'].includes(role);
   const canPurge   = role === 'admin';
   const canImport  = ['qa_grader', 'cs_leader', 'admin'].includes(role);
@@ -1403,16 +1445,16 @@ function applyRoleUI() {
   const submissionsTitle = document.querySelector('#vs .tview-head h2');
 
   if (gradingTab) gradingTab.textContent = isQaGrader ? 'My Queue' : 'Grading';
-  if (submissionsTab) submissionsTab.textContent = isQaGrader ? 'My Graded Tickets' : 'Submissions';
+  if (submissionsTab) submissionsTab.textContent = 'Submissions';
   if (queueTitle) queueTitle.textContent = isQaGrader ? 'My Queue' : 'Queue';
-  if (submissionsTitle) submissionsTitle.textContent = isQaGrader ? 'My Graded Tickets' : 'Submissions';
+  if (submissionsTitle) submissionsTitle.textContent = 'Submissions';
 
   // Grading + Submissions — hidden for agents
   document.querySelector('.tab[data-tab="g"]')?.style.setProperty('display', isAgent ? 'none' : '');
   document.querySelector('.tab[data-tab="s"]')?.style.setProperty('display', isAgent ? 'none' : '');
 
   // Agent tabs
-  document.querySelector('.tab[data-tab="n"]')?.style.setProperty('display', isAgent ? '' : 'none');
+  document.querySelector('.tab[data-tab="n"]')?.style.setProperty('display', (isAgent || isCsLeader) ? '' : 'none');
   document.querySelector('.tab[data-tab="m"]')?.style.setProperty('display', isAgent ? '' : 'none');
 
   // Admin tab
@@ -1782,6 +1824,39 @@ async function deleteTicket(ticketId) {
   }
 }
 
+async function assignTickets(ticketIds, graderUsername) {
+  const ids = (Array.isArray(ticketIds) ? ticketIds : [ticketIds])
+    .map(id => Number(id))
+    .filter(id => Number.isFinite(id));
+
+  if (!graderUsername) throw new Error('Select a grader first');
+  if (!ids.length) throw new Error('No tickets selected');
+
+  const r = await fetch(`${API_BASE}/api/tickets/assign`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ ticket_ids: ids, grader_username: graderUsername })
+  });
+
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || 'Assign failed');
+  return data;
+}
+
+function closeAssignMenus() {
+  document.querySelectorAll('[data-assign-pop]').forEach(pop => {
+    pop.style.display = 'none';
+  });
+}
+
+function closeAssignMenusOnOutsideClick(event) {
+  if (event.target.closest('[data-assign-toggle]') || event.target.closest('[data-assign-pop]')) return;
+  closeAssignMenus();
+}
+
+document.addEventListener('click', closeAssignMenusOnOutsideClick);
+
 const ACTION_LABELS = {
   login: 'Login',
   logout: 'Logout',
@@ -1844,6 +1919,7 @@ async function renderHome() {
   }
 
   const role = d.role;
+  availableGraders = Array.isArray(d.available_graders) ? d.available_graders : availableGraders;
   let cards = '';
 
   if (role === 'agent') {
@@ -1949,6 +2025,15 @@ async function renderHome() {
       `<div class="home-big">${d.user_count}</div>
        <div class="home-sub">${d.active_sessions} active session${d.active_sessions !== 1 ? 's' : ''}</div>`);
 
+    if (role === 'cs_leader') {
+      const newReviewCount = Array.isArray(d.unassigned_low_score) ? d.unassigned_low_score.length : 0;
+      cards += homeCard('New Review Tickets',
+        `<div class="home-big" style="color:${newReviewCount > 0 ? 'var(--am)' : 'var(--mu)'}">${newReviewCount}</div>
+         <div class="home-sub">tickets ready for assignment review</div>
+         <button class="btn-p home-action-btn" id="home-go-review">Open</button>`,
+        { accent: newReviewCount > 0 });
+    }
+
     // Recent logs card
     const logRows = (d.recent_logs || []).map(l =>
       `<div class="home-log-row">
@@ -1958,41 +2043,6 @@ async function renderHome() {
       </div>`
     ).join('');
     cards += homeCard('Recent Activity', logRows || '<span style="color:var(--mu)">No activity yet</span>', { wide: true });
-
-    // Unassigned low-score tickets
-    if (role === 'cs_leader' && (d.unassigned_low_score || []).length > 0) {
-      const graderOpts = (d.available_graders || []).map(g =>
-        `<option value="${escapeHtml(g.username)}">${escapeHtml(g.username)}</option>`
-      ).join('');
-
-      const rows = d.unassigned_low_score.map(t =>
-        `<tr>
-          <td><input type="checkbox" class="home-assign-chk" data-tid="${t.id}"></td>
-          <td>${escapeHtml(t.subject || '—')}</td>
-          <td>${escapeHtml(t.agent || '—')}</td>
-          <td>${escapeHtml(t.inbox || '—')}</td>
-          <td>${fmtDate(t.ticket_date)}</td>
-          <td style="color:var(--rd)">${t.total_percent != null ? t.total_percent + '%' : '—'}</td>
-        </tr>`
-      ).join('');
-
-      cards += `<div class="home-card home-card-wide">
-        <div class="home-card-title">Needs Review — Score &lt; 60% (Unassigned)</div>
-        <div class="home-card-body">
-          <div class="home-assign-bar">
-            <label><input type="checkbox" id="home-assign-all"> Select all</label>
-            <select id="home-assign-grader"><option value="">— assign to grader —</option>${graderOpts}</select>
-            <button class="btn-p" id="home-assign-btn">Assign</button>
-          </div>
-          <div class="home-table-wrap">
-            <table class="home-assign-table">
-              <thead><tr><th></th><th>Subject</th><th>Agent</th><th>Inbox</th><th>Date</th><th>Score</th></tr></thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </div>
-        </div>
-      </div>`;
-    }
   }
 
   wrap.innerHTML = `<div class="home-grid">${cards}</div>`;
@@ -2000,32 +2050,7 @@ async function renderHome() {
   // Wire up buttons
   document.getElementById('home-go-new')?.addEventListener('click', () => switchTab('n'));
   document.getElementById('home-go-grading')?.addEventListener('click', () => switchTab('g'));
-
-  // Select all checkbox
-  document.getElementById('home-assign-all')?.addEventListener('change', function() {
-    wrap.querySelectorAll('.home-assign-chk').forEach(c => { c.checked = this.checked; });
-  });
-
-  // Assign button
-  document.getElementById('home-assign-btn')?.addEventListener('click', async () => {
-    const grader = document.getElementById('home-assign-grader')?.value;
-    if (!grader) { toast('Select a grader first', 'err'); return; }
-    const ids = [...wrap.querySelectorAll('.home-assign-chk:checked')].map(c => Number(c.dataset.tid));
-    if (!ids.length) { toast('Select at least one ticket', 'err'); return; }
-    try {
-      const r = await fetch(`${API_BASE}/api/tickets/assign`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ ticket_ids: ids, grader_username: grader })
-      });
-      if (!r.ok) throw new Error((await r.json()).error);
-      toast(`Assigned ${ids.length} ticket${ids.length !== 1 ? 's' : ''} to ${grader} ✓`);
-      await renderHome();
-    } catch (e) {
-      toast(e.message || 'Assign failed', 'err');
-    }
-  });
+  document.getElementById('home-go-review')?.addEventListener('click', () => switchTab('n'));
 }
 
 async function renderLogs() {
@@ -2630,10 +2655,11 @@ function renderQueueFilters() {
 
   const role = user?.role;
   const canSeeAgent = role !== 'agent';
-  const weeks    = uniq(TICKETS.map(t => t.week));
-  const inboxes  = uniq(TICKETS.map(t => t.inbox));
-  const agents   = canSeeAgent ? uniq(TICKETS.map(t => t.agent)) : [];
-  const graders  = uniq(Object.values(grades).map(g => g?.grader).filter(Boolean));
+  const sourceTickets = graderVisibleTickets(TICKETS);
+  const weeks    = uniq(sourceTickets.map(t => t.week));
+  const inboxes  = uniq(sourceTickets.map(t => t.inbox));
+  const agents   = canSeeAgent ? uniq(sourceTickets.map(t => t.agent)) : [];
+  const graders  = uniq(sourceTickets.map(t => grades[t.id]?.grader).filter(Boolean));
 
   const sel = (val, arr) => arr.map(o => `<option value="${o}" ${F[val]===o?'selected':''}>${o}</option>`).join('');
   const catOpts = ANALYTICS_CATEGORY_OPTIONS.map(c => `<option value="${c.id}" ${F.category===c.id?'selected':''}>${c.label}</option>`).join('');
@@ -2692,7 +2718,7 @@ function renderSubsFilters() {
 
   const role = user?.role;
   const canSeeAgent = role !== 'agent';
-  const submitted = TICKETS.filter(t => grades[t.id]?.submitted);
+  const submitted = graderVisibleTickets(TICKETS).filter(t => grades[t.id]?.submitted);
 
   const weeks   = uniq(submitted.map(t => t.week));
   const inboxes = uniq(submitted.map(t => t.inbox));
@@ -2908,9 +2934,10 @@ function updateSelBar() {
 function renderList(){
   const list = document.getElementById('tlist');
   const pagerHost = document.getElementById('grading-pager');
+  const queueTickets = graderVisibleTickets(TICKETS);
 
   // apply status filter then field filters
-  const statusFiltered = TICKETS.filter(t =>
+  const statusFiltered = queueTickets.filter(t =>
     filter === 'graded'  ?  grades[t.id]?.submitted :
     filter === 'pending' ? !grades[t.id]?.submitted : true
   );
@@ -2978,9 +3005,10 @@ window.toggleSelect = function(id, checked) {
 };
 
 function updateStats(){
-  const done = TICKETS.filter(t => grades[t.id]?.submitted);
+  const sourceTickets = graderVisibleTickets(TICKETS);
+  const done = sourceTickets.filter(t => grades[t.id]?.submitted);
   document.getElementById('sg').textContent = done.length;
-  document.getElementById('sp').textContent = TICKETS.length - done.length;
+  document.getElementById('sp').textContent = sourceTickets.length - done.length;
   const avgs = done.map(t => pct(agentRaw(t.id), agentDenom(t.id)));
   document.getElementById('sa').textContent = avgs.length ? Math.round(avgs.reduce((a, b) => a + b, 0) / avgs.length) + '%' : '—';
 }
@@ -3471,19 +3499,153 @@ function isNewAgentTicket(ticketId) {
 
 function renderNewTickets() {
   const countEl = document.getElementById('new-count');
+  const titleEl = document.querySelector('#vn .tview-head h2');
   const thead = document.querySelector('#new-table thead');
   const tbody = document.querySelector('#new-table tbody');
   const pagerHost = document.getElementById('new-pager');
-  if (!countEl || !thead || !tbody) return;
+  if (!countEl || !thead || !tbody || !titleEl) return;
 
-  const tickets = TICKETS.filter(t => isNewAgentTicket(t.id));
+  const isCsLeader = user?.role === 'cs_leader';
+  const tickets = isCsLeader ? reviewAssignmentTickets() : TICKETS.filter(t => isNewAgentTicket(t.id));
   const pageData = paginateItems(tickets, 'newTickets');
-  countEl.textContent = tickets.length ? `${tickets.length} new graded ticket${tickets.length !== 1 ? 's' : ''}` : 'No new graded tickets';
+  titleEl.textContent = isCsLeader ? 'New Tickets' : 'New Tickets';
+  countEl.textContent = isCsLeader
+    ? (tickets.length ? `${tickets.length} new ticket${tickets.length !== 1 ? 's' : ''} for review` : 'No new tickets for review')
+    : (tickets.length ? `${tickets.length} new graded ticket${tickets.length !== 1 ? 's' : ''}` : 'No new graded tickets');
 
   if (!tickets.length) {
     thead.innerHTML = '';
-    tbody.innerHTML = `<tr><td colspan="200" style="padding:40px;text-align:center;color:var(--mu)">No new graded tickets</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="200" style="padding:40px;text-align:center;color:var(--mu)">${isCsLeader ? 'No new tickets for review' : 'No new graded tickets'}</td></tr>`;
     if (pagerHost) pagerHost.innerHTML = '';
+    return;
+  }
+
+  if (isCsLeader) {
+    const graderOpts = availableGraders.map(g =>
+      `<option value="${escapeHtml(g.username)}">${escapeHtml(g.username)}</option>`
+    ).join('');
+
+    thead.innerHTML = `<tr>
+      <th>Open</th>
+      <th>Assign</th>
+      <th>Week</th>
+      <th>Ticket date</th>
+      <th>Agent</th>
+      <th>Created Time</th>
+      <th>Inbox</th>
+      <th>cnv_it</th>
+      <th>Front URL</th>
+      <th>Bot Denom</th>
+      <th>Bot Num</th>
+      <th>Bot's score</th>
+      <th>Andi's Denom</th>
+      <th>Andi's Num</th>
+      <th>Andi's score</th>
+      <th>Diff</th>
+      <th>Grader</th>
+      ${C.map(c => `<th>${c.label}</th><th>Cause</th>`).join('')}
+      <th>Auto-Fail</th>
+      <th>Auto-Fail Cause</th>
+      <th>Bug Esc</th>
+      <th>Bug Esc Cause</th>
+      <th>Post Bug Esc</th>
+      <th>Post Bug Esc Cause</th>
+      <th>QA Feedback</th>
+      <th>Reflection</th>
+      <th>Actions</th>
+    </tr>`;
+
+    tbody.innerHTML = pageData.items.map(t => {
+      const g = grades[t.id];
+      const aR = agentRaw(t.id);
+      const bR = botRaw(t);
+      const aD = agentDenom(t.id);
+      const bD = botDenom(t);
+      const aP = pct(aR, aD);
+      const bP = pct(bR, bD);
+      const af = isAF(t.id);
+      const diff = aP - bP;
+      const tWk = t.week || weekOf(t.date || t.createdTime);
+      const convId = convIdFromFrontUrl(t.frontUrl);
+      const assignMenu = graderOpts
+        ? `<div class="assign-menu" style="position:relative;display:inline-block">
+             <button class="bsm" type="button" data-assign-toggle="${t.id}">Assign</button>
+             <div class="assign-pop" data-assign-pop="${t.id}" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:20;min-width:220px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--bg2);box-shadow:0 16px 40px rgba(0,0,0,.16)">
+               <select data-assign-select="${t.id}" style="width:100%;margin-bottom:8px">
+                 <option value="">Select grader</option>
+                 ${graderOpts}
+               </select>
+               <button class="btn-p" type="button" data-assign-confirm="${t.id}" style="width:100%">Assign</button>
+             </div>
+           </div>`
+        : `<span style="color:var(--mu)">No graders</span>`;
+
+      return `<tr>
+        <td><button class="tdm-open" onclick="openTicketDetail('${t.id}')">Open</button></td>
+        <td>${assignMenu}</td>
+        <td>${tWk}</td>
+        <td>${fmtDate(t.date || t.createdTime)}</td>
+        <td>${t.agent || ''}</td>
+        <td style="font-size:10px">${t.createdTime || ''}</td>
+        <td>${t.inbox || ''}</td>
+        <td class="cn">${convId || ''}</td>
+        <td style="font-size:10px">${t.frontUrl ? `<a href="${t.frontUrl}" target="_blank" rel="noopener noreferrer">link</a>` : ''}</td>
+        <td class="cn">${bD}</td>
+        <td class="cn">${bR}</td>
+        <td><span class="schip" style="background:${bP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${scol(bP)}">${bP}%</span></td>
+        <td class="cn">${aD}</td>
+        <td class="cn">${aR}</td>
+        <td><span class="schip" style="background:${af ? 'var(--rds)' : aP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${af ? 'var(--rd)' : scol(aP)}">${af ? '0%' : aP + '%'}</span></td>
+        <td class="cn" style="color:${diff > 0 ? 'var(--gr)' : diff < 0 ? 'var(--rd)' : 'var(--mu)'}">${diff > 0 ? '+' : ''}${diff}%</td>
+        <td>${g.grader || user?.name || 'Bot'}</td>
+        ${C.map(c => {
+          const v = g.scores[c.id];
+          const p = isNA(v) ? null : pct(nv(v), c.max);
+          const col = p === null ? 'var(--mu2)' : scol(p);
+          return `<td><span class="cn" style="color:${col}">${isNA(v) ? 'NA' : nv(v)}</span></td><td class="cc">${finalCause(g, c.id)}</td>`;
+        }).join('')}
+        <td style="color:${g.af.autofail ? 'var(--rd)' : 'var(--mu)'}">${g.af.autofail ? 'TRUE' : 'FALSE'}</td>
+        <td class="cc">${finalAFCause(g, 'autofail')}</td>
+        <td>${isNA(g.af.bug_esc) ? 'NA' : g.af.bug_esc}</td>
+        <td class="cc">${finalAFCause(g, 'bug_esc')}</td>
+        <td>${isNA(g.af.post_bug) ? 'NA' : g.af.post_bug}</td>
+        <td class="cc">${finalAFCause(g, 'post_bug')}</td>
+        <td class="cc">${g.qaFeedback || ''}</td>
+        <td class="cc">${g.reflection || ''}</td>
+        <td><button class="bsm" onclick="deleteTicketFromTable('${t.id}')">Delete</button></td>
+      </tr>`;
+    }).join('');
+
+    tbody.querySelectorAll('[data-assign-toggle]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const id = btn.dataset.assignToggle;
+        tbody.querySelectorAll('[data-assign-pop]').forEach(pop => {
+          if (pop.dataset.assignPop !== id) pop.style.display = 'none';
+        });
+        const pop = tbody.querySelector(`[data-assign-pop="${id}"]`);
+        if (pop) pop.style.display = pop.style.display === 'none' ? '' : 'none';
+      });
+    });
+
+    tbody.querySelectorAll('[data-assign-confirm]').forEach(btn => {
+      btn.addEventListener('click', async e => {
+        e.stopPropagation();
+        const id = btn.dataset.assignConfirm;
+        const select = tbody.querySelector(`[data-assign-select="${id}"]`);
+        const grader = select?.value || '';
+        try {
+          await assignTickets([id], grader);
+          toast(`Assigned ticket to ${grader} ✓`);
+          await loadTicketsFromServer();
+          renderNewTickets();
+        } catch (err) {
+          toast(err.message || 'Assign failed', 'err');
+        }
+      });
+    });
+
+    renderPager('newTickets', 'new-pager', pageData);
     return;
   }
 
@@ -3925,11 +4087,12 @@ window.openTicketDetail = async function(ticketId) {
 };
 
 function renderSubs(){
-  const allDone = TICKETS.filter(t => grades[t.id]?.submitted);
+  const submissionSource = user?.role === 'qa_grader' ? graderVisibleTickets(TICKETS) : TICKETS;
+  const allDone = submissionSource.filter(t => grades[t.id]?.submitted);
   const done = applySubmissionFilters(allDone);
   const pageData = paginateItems(done, 'submissions');
   document.getElementById('sub-count').textContent = user?.role === 'qa_grader'
-    ? (done.length ? `${done.length} ticket${done.length !== 1 ? 's' : ''} graded by you` : 'No tickets graded by you yet')
+    ? (done.length ? `${done.length} ticket${done.length !== 1 ? 's' : ''} in your submissions` : 'No tickets in your submissions yet')
     : (done.length ? `${done.length} submitted grade${done.length !== 1 ? 's' : ''}` : 'No graded tickets yet');
 
   const thead = document.querySelector('#sub-table thead');
@@ -3938,7 +4101,7 @@ function renderSubs(){
 
   if(!done.length){
     thead.innerHTML = '';
-    const emptyLabel = user?.role === 'qa_grader' ? 'No tickets graded by you yet' : 'No submissions yet';
+    const emptyLabel = user?.role === 'qa_grader' ? 'No tickets in your submissions yet' : 'No submissions yet';
     tbody.innerHTML = `<tr><td colspan="200" style="padding:40px;text-align:center;color:var(--mu)">${emptyLabel}</td></tr>`;
     if (pagerHost) pagerHost.innerHTML = '';
     return;
@@ -4032,7 +4195,7 @@ async function renderAnalytics(){
   const done = applyAnalyticsFilters(allDone);
   const generalDone = allDone.filter(t => ticketMatchesAnalyticsFilters(t, { ignoreGrader:true }));
 
-  const canSplitAnalytics = user?.role === 'cs_leader' || user?.role === 'admin';
+  const canSplitAnalytics = ['qa_grader', 'cs_leader', 'admin'].includes(user?.role);
   const subTabHtml = canSplitAnalytics ? `<div class="an-subtabs">
     <button class="an-subtab${analyticsSubTab === 'general' ? ' on' : ''}" data-subtab="general">General Analytics</button>
     <button class="an-subtab${analyticsSubTab === 'submissions' ? ' on' : ''}" data-subtab="submissions">Submissions Analytics</button>

@@ -231,6 +231,7 @@ const AGENT_LABEL_SQL = `CASE
   THEN SPLIT_PART(LOWER(BTRIM(COALESCE(t.agent, ''))), '@', 1) || '@wonderly.com'
   ELSE BTRIM(COALESCE(t.agent, ''))
 END`;
+const LOW_SCORE_REVIEW_CUTOFF_DATE = '2026-03-30';
 
 function currentAgentKey(sessionUser) {
   return normalizeAgentIdentity(sessionUser?.email || sessionUser?.username);
@@ -1321,7 +1322,7 @@ app.get('/api/home', requireAuth, async (req, res) => {
             AND t.ticket_date >= $1 AND t.ticket_date < $2
           GROUP BY t.inbox ORDER BY cnt DESC LIMIT 1`, [thisWeekFrom, thisWeekTo]),
 
-        // Unassigned tickets with score < 60%
+        // Unassigned tickets with score <= 60% from 2026-03-30 onward
         pool.query(`
           SELECT t.id, t.subject, t.agent, t.inbox, t.ticket_date, t.week,
             g.total_percent, g.grader_name
@@ -1329,8 +1330,9 @@ app.get('/api/home', requireAuth, async (req, res) => {
           JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
           WHERE t.deleted_at IS NULL AND g.submitted = TRUE
             AND (t.assigned_grader IS NULL OR t.assigned_grader = '')
-            AND g.total_percent < 60
-          ORDER BY t.ticket_date DESC LIMIT 100`),
+            AND t.ticket_date >= $1
+            AND g.total_percent <= 60
+          ORDER BY t.ticket_date DESC LIMIT 100`, [LOW_SCORE_REVIEW_CUTOFF_DATE]),
 
         // Best agent this week
         pool.query(`
@@ -1629,16 +1631,12 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
   try {
     const role = req.session.user.role;
     const isAgent = role === 'agent';
-    const isQaGrader = role === 'qa_grader';
     let params = [];
     let accessWhereSql = '';
 
     if (isAgent) {
       params = [currentAgentKey(req.session.user)];
       accessWhereSql = `AND ${AGENT_KEY_SQL} = $1`;
-    } else if (isQaGrader) {
-      params = [currentGraderKeys(req.session.user), req.session.user.id];
-      accessWhereSql = `AND ${graderTicketAccessSql('t', 'g', 1, 2)}`;
     }
 
     const result = await pool.query(`
