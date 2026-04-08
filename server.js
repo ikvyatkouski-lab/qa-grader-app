@@ -231,6 +231,96 @@ function currentAgentKey(sessionUser) {
   return normalizeAgentIdentity(sessionUser?.email || sessionUser?.username);
 }
 
+async function ensureSchema() {
+  // Core tables — safe to run on every startup (IF NOT EXISTS)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id serial PRIMARY KEY,
+      email text UNIQUE NOT NULL,
+      username text UNIQUE NOT NULL,
+      password_hash text NOT NULL,
+      role text NOT NULL DEFAULT 'agent',
+      is_active boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tickets (
+      id bigserial PRIMARY KEY,
+      conv_id text UNIQUE,
+      subject text,
+      agent text,
+      inbox text,
+      ticket_date date,
+      week text,
+      front_url text,
+      bot_payload jsonb,
+      imported_at timestamptz NOT NULL DEFAULT NOW(),
+      deleted_at timestamptz
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS grades (
+      id bigserial PRIMARY KEY,
+      ticket_id bigint NOT NULL REFERENCES tickets(id),
+      grader_user_id integer REFERENCES users(id),
+      grader_name text,
+      grader_type text,
+      numerator integer,
+      denominator integer,
+      total_percent integer,
+      qa_feedback text,
+      agent_focus text,
+      bot_similar text,
+      bot_suggestion text,
+      category text,
+      brian_notes text,
+      fixed text,
+      submitted boolean NOT NULL DEFAULT false,
+      submitted_at timestamptz,
+      reflection_text text,
+      reflection_submitted_at timestamptz,
+      agent_acknowledged_at timestamptz,
+      reflection_read_at timestamptz,
+      review_duration_seconds integer,
+      is_deleted boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT NOW(),
+      updated_at timestamptz NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS grade_breakdown (
+      id bigserial PRIMARY KEY,
+      grade_id bigint NOT NULL REFERENCES grades(id) ON DELETE CASCADE,
+      category_id text NOT NULL,
+      score text,
+      cause text,
+      custom_cause text
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS grade_flags (
+      id bigserial PRIMARY KEY,
+      grade_id bigint NOT NULL REFERENCES grades(id) ON DELETE CASCADE,
+      flag_id text NOT NULL,
+      value text,
+      cause text,
+      custom_cause text
+    )
+  `);
+
+  // Indexes
+  await pool.query(`CREATE INDEX IF NOT EXISTS tickets_agent_idx ON tickets (agent)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS tickets_imported_at_idx ON tickets (imported_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS grades_ticket_id_idx ON grades (ticket_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS grade_breakdown_grade_id_idx ON grade_breakdown (grade_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS grade_flags_grade_id_idx ON grade_flags (grade_id)`);
+}
+
 async function ensureLogsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_logs (
@@ -2040,7 +2130,7 @@ app.get('*', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-Promise.all([ensureReflectionSchema(), ensureLogsTable()])
+Promise.all([ensureSchema(), ensureReflectionSchema(), ensureLogsTable()])
   .then(() => {
     app.listen(port, () => {
       console.log(`API listening on http://localhost:${port}`);
