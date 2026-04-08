@@ -3,6 +3,3 @@ node_modules
 .DS_Store
 .claude/
 QA_grader/
-content.js
-styles.css
-index.html
