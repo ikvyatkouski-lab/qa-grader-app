@@ -1110,6 +1110,34 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
     const params = isAgent ? [currentAgentKey(req.session.user)] : [];
 
     const result = await pool.query(`
+      WITH bd AS (
+        SELECT grade_id,
+          json_agg(
+            json_build_object(
+              'category_id', gb.category_id,
+              'score', gb.score,
+              'cause', gb.cause,
+              'custom_cause', gb.custom_cause
+            )
+            ORDER BY gb.category_id
+          ) AS data
+        FROM grade_breakdown gb
+        GROUP BY gb.grade_id
+      ),
+      fl AS (
+        SELECT grade_id,
+          json_agg(
+            json_build_object(
+              'flag_id', gf.flag_id,
+              'value', gf.value,
+              'cause', gf.cause,
+              'custom_cause', gf.custom_cause
+            )
+            ORDER BY gf.flag_id
+          ) AS data
+        FROM grade_flags gf
+        GROUP BY gf.grade_id
+      )
       SELECT
         t.*,
         g.id AS grade_id,
@@ -1133,34 +1161,12 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
         g.agent_acknowledged_at,
         g.reflection_read_at,
         g.review_duration_seconds,
-        COALESCE((
-          SELECT json_agg(
-            json_build_object(
-              'category_id', gb.category_id,
-              'score', gb.score,
-              'cause', gb.cause,
-              'custom_cause', gb.custom_cause
-            )
-            ORDER BY gb.category_id
-          )
-          FROM grade_breakdown gb
-          WHERE gb.grade_id = g.id
-        ), '[]'::json) AS breakdown,
-        COALESCE((
-          SELECT json_agg(
-            json_build_object(
-              'flag_id', gf.flag_id,
-              'value', gf.value,
-              'cause', gf.cause,
-              'custom_cause', gf.custom_cause
-            )
-            ORDER BY gf.flag_id
-          )
-          FROM grade_flags gf
-          WHERE gf.grade_id = g.id
-        ), '[]'::json) AS flags
+        COALESCE(bd.data, '[]'::json) AS breakdown,
+        COALESCE(fl.data, '[]'::json) AS flags
       FROM tickets t
       LEFT JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+      LEFT JOIN bd ON bd.grade_id = g.id
+      LEFT JOIN fl ON fl.grade_id = g.id
       WHERE t.deleted_at IS NULL
       ${isAgent ? `AND ${AGENT_KEY_SQL} = $1` : ''}
       ORDER BY t.imported_at DESC
