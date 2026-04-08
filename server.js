@@ -322,6 +322,12 @@ async function ensureSchema() {
     )
   `);
 
+  // Patch any missing columns on existing tables (safe to run repeatedly)
+  await pool.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS created_time text`);
+  await pool.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS source_file_name text`);
+  await pool.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS imported_by_user_id integer REFERENCES users(id)`);
+  await pool.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS deleted_by_user_id integer REFERENCES users(id)`);
+
   // Indexes
   await pool.query(`CREATE INDEX IF NOT EXISTS tickets_agent_idx ON tickets (agent)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS tickets_imported_at_idx ON tickets (imported_at DESC)`);
