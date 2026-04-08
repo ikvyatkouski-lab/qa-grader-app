@@ -1437,6 +1437,7 @@ function applyRoleUI() {
   const isQaGrader = role === 'qa_grader';
   const isCsLeader = role === 'cs_leader';
   const canAdmin   = ['admin', 'cs_leader'].includes(role);
+  const isAdmin    = role === 'admin';
   const canPurge   = role === 'admin';
   const canImport  = ['qa_grader', 'cs_leader', 'admin'].includes(role);
   const gradingTab = document.querySelector('.tab[data-tab="g"]');
@@ -1467,6 +1468,9 @@ function applyRoleUI() {
 
   const purgeBtn = document.getElementById('purge-btn');
   if (purgeBtn) purgeBtn.style.display = canPurge ? '' : 'none';
+
+  const sqlConsoleCard = document.getElementById('sql-console-card');
+  if (sqlConsoleCard) sqlConsoleCard.style.display = isAdmin ? '' : 'none';
 
   const importLabel = document.getElementById('import-csv-label');
   if (importLabel) importLabel.style.display = canImport ? '' : 'none';
@@ -1866,6 +1870,7 @@ const ACTION_LABELS = {
   tickets_imported: 'Tickets imported',
   ticket_deleted: 'Ticket deleted',
   tickets_purged: 'Tickets purged',
+  sql_console_query: 'SQL console query',
   user_created: 'User created',
   user_deleted: 'User deleted',
   user_credentials_edited: 'Credentials edited',
@@ -2127,6 +2132,19 @@ document.getElementById('log-filter-reset')?.addEventListener('click', () => {
   renderLogs();
 });
 
+document.getElementById('sql-console-run')?.addEventListener('click', runSqlConsole);
+document.getElementById('sql-console-clear')?.addEventListener('click', () => {
+  const input = document.getElementById('sql-console-input');
+  if (input) input.value = '';
+  renderSqlConsoleResult(null, '');
+});
+document.getElementById('sql-console-input')?.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    e.preventDefault();
+    runSqlConsole();
+  }
+});
+
 async function loadAdminUsers() {
   const r = await fetch(`${API_BASE}/api/admin/users`, {
     credentials: 'include'
@@ -2156,6 +2174,87 @@ async function loadAdminUsers() {
       </td>
     </tr>
   `).join('');
+}
+
+function renderSqlConsoleResult(data = null, error = '') {
+  const host = document.getElementById('sql-console-result');
+  const meta = document.getElementById('sql-console-meta');
+  if (!host || !meta) return;
+
+  if (error) {
+    meta.textContent = 'Query failed';
+    host.innerHTML = `<div class="tdm-copy" style="color:var(--rd)">${escapeHtml(error)}</div>`;
+    return;
+  }
+
+  if (!data) {
+    meta.textContent = '';
+    host.innerHTML = '';
+    return;
+  }
+
+  const command = escapeHtml(data.command || 'OK');
+  const duration = Number(data.duration_ms) || 0;
+  const rowCount = Number(data.row_count) || 0;
+  const fields = Array.isArray(data.fields) ? data.fields : [];
+  const rows = Array.isArray(data.rows) ? data.rows : [];
+
+  meta.textContent = `${command} · ${rowCount} row${rowCount !== 1 ? 's' : ''} · ${duration} ms`;
+
+  if (!fields.length) {
+    host.innerHTML = `<div class="tdm-copy">Statement executed successfully.</div>`;
+    return;
+  }
+
+  host.innerHTML = `<div class="dtw" style="max-height:360px">
+    <table class="dt">
+      <thead>
+        <tr>${fields.map(field => `<th>${escapeHtml(field)}</th>`).join('')}</tr>
+      </thead>
+      <tbody>
+        ${rows.length ? rows.map(row => `<tr>${fields.map(field => {
+          const value = row?.[field];
+          const text = value == null ? 'NULL' : (typeof value === 'object' ? JSON.stringify(value) : String(value));
+          return `<td>${escapeHtml(text)}</td>`;
+        }).join('')}</tr>`).join('') : `<tr><td colspan="${fields.length}" style="color:var(--mu)">No rows returned</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+async function runSqlConsole() {
+  const input = document.getElementById('sql-console-input');
+  const button = document.getElementById('sql-console-run');
+  if (!input || !button) return;
+
+  const sql = input.value.trim();
+  if (!sql) {
+    toast('Enter a SQL statement first', 'err');
+    return;
+  }
+
+  button.disabled = true;
+  renderSqlConsoleResult(null, '');
+  const meta = document.getElementById('sql-console-meta');
+  if (meta) meta.textContent = 'Running…';
+
+  try {
+    const r = await fetch(`${API_BASE}/api/admin/sql`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ sql })
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'SQL query failed');
+    renderSqlConsoleResult(data, '');
+    toast('SQL executed ✓');
+  } catch (error) {
+    renderSqlConsoleResult(null, error.message || 'SQL query failed');
+    toast(error.message || 'SQL query failed', 'err');
+  } finally {
+    button.disabled = false;
+  }
 }
 
 document.getElementById('lbtn').addEventListener('click', async () => {

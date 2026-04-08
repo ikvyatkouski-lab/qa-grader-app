@@ -301,6 +301,21 @@
         </div>
       </div>
 
+      <div class="ccard" id="sql-console-card" style="margin-bottom:16px;display:none">
+        <div class="ctitle">SQL Console</div>
+        <div class="tsub" style="margin-top:0;margin-bottom:12px">Admin only. Run one SQL statement against the production database.</div>
+        <div class="ef full" style="margin-bottom:12px">
+          <label>SQL</label>
+          <textarea id="sql-console-input" rows="8" spellcheck="false" placeholder="SELECT * FROM tickets ORDER BY imported_at DESC LIMIT 20;"></textarea>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+          <button class="btn-sub" id="sql-console-run" type="button">Run SQL</button>
+          <button class="bsm" id="sql-console-clear" type="button">Clear</button>
+          <span class="tsub" id="sql-console-meta" style="margin-top:0"></span>
+        </div>
+        <div id="sql-console-result"></div>
+      </div>
+
       <div class="dtw">
         <table class="dt" id="admin-users-table">
           <thead>

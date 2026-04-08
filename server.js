@@ -1489,6 +1489,48 @@ app.get('/api/admin/users', requireUserMgmt, async (req, res) => {
   }
 });
 
+app.post('/api/admin/sql', requireAdmin, async (req, res) => {
+  try {
+    const sql = String(req.body?.sql || '').trim();
+    if (!sql) {
+      return res.status(400).json({ error: 'SQL is required' });
+    }
+
+    const statementCount = sql
+      .split(';')
+      .map(part => part.trim())
+      .filter(Boolean)
+      .length;
+
+    if (statementCount > 1) {
+      return res.status(400).json({ error: 'Run one SQL statement at a time' });
+    }
+
+    const startedAt = Date.now();
+    const result = await pool.query(sql);
+    const durationMs = Date.now() - startedAt;
+
+    logAction(req, 'sql_console_query', {
+      command: result.command,
+      row_count: result.rowCount ?? 0,
+      duration_ms: durationMs,
+      sql_preview: sql.slice(0, 300)
+    });
+
+    res.json({
+      ok: true,
+      command: result.command || 'OK',
+      row_count: result.rowCount ?? 0,
+      duration_ms: durationMs,
+      fields: Array.isArray(result.fields) ? result.fields.map(field => field.name) : [],
+      rows: Array.isArray(result.rows) ? result.rows : []
+    });
+  } catch (error) {
+    console.error('POST /api/admin/sql failed', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.post('/api/admin/users', requireUserMgmt, async (req, res) => {
   try {
     const { email, username, password, role = 'user' } = req.body;
