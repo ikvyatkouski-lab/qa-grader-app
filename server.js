@@ -34,7 +34,12 @@ function isAllowedOrigin(origin) {
 
   try {
     const parsed = new URL(origin);
-    return parsed.protocol === 'https:' && /\.pages\.dev$/i.test(parsed.hostname);
+    if (parsed.protocol !== 'https:') return false;
+    // Allow Cloudflare Pages previews
+    if (/\.pages\.dev$/i.test(parsed.hostname)) return true;
+    // Allow any *.onrender.com (same service, different subdomain during deploys)
+    if (/\.onrender\.com$/i.test(parsed.hostname)) return true;
+    return false;
   } catch {
     return false;
   }
@@ -2130,7 +2135,26 @@ app.get('/{*path}', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+async function seedAdminIfEmpty() {
+  const { rows } = await pool.query('SELECT COUNT(*) AS cnt FROM users');
+  if (parseInt(rows[0].cnt, 10) > 0) return;
+  const username = process.env.SEED_USERNAME;
+  const password = process.env.SEED_PASSWORD;
+  const email    = process.env.SEED_EMAIL || `${username}@wonderly.com`;
+  if (!username || !password) {
+    console.warn('No users exist and SEED_USERNAME/SEED_PASSWORD not set — skipping auto-seed');
+    return;
+  }
+  const hash = await bcrypt.hash(password, 10);
+  await pool.query(
+    'INSERT INTO users (email, username, password_hash, role) VALUES ($1, $2, $3, $4)',
+    [email, username, hash, 'admin']
+  );
+  console.log(`Seeded admin user: ${username}`);
+}
+
 Promise.all([ensureSchema(), ensureReflectionSchema(), ensureLogsTable()])
+  .then(() => seedAdminIfEmpty())
   .then(() => {
     app.listen(port, () => {
       console.log(`API listening on http://localhost:${port}`);
