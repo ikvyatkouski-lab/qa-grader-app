@@ -1084,7 +1084,7 @@ app.get('/api/home', requireAuth, async (req, res) => {
     if (role === 'qa_grader') {
       const graderName = u.username;
 
-      const [pending, weekTeam, lastWeekTeam, worstCat, bestCat, topInbox] = await Promise.all([
+      const [pending, weekTeam, lastWeekTeam, worstCat, bestCat, topInbox, bestAgent, bestAgentLast] = await Promise.all([
         // Tickets pending grading assigned to this grader
         pool.query(`
           SELECT COUNT(*) AS cnt FROM tickets t
@@ -1134,7 +1134,25 @@ app.get('/api/home', requireAuth, async (req, res) => {
           JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
           WHERE t.deleted_at IS NULL AND g.submitted = TRUE
             AND t.ticket_date >= $1 AND t.ticket_date < $2
-          GROUP BY t.inbox ORDER BY cnt DESC LIMIT 1`, [thisWeekFrom, thisWeekTo])
+          GROUP BY t.inbox ORDER BY cnt DESC LIMIT 1`, [thisWeekFrom, thisWeekTo]),
+
+        // Best agent this week
+        pool.query(`
+          SELECT ${AGENT_LABEL_SQL} AS agent, ROUND(AVG(g.total_percent)) AS avg_score, COUNT(*) AS cnt
+          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND t.ticket_date >= $1 AND t.ticket_date < $2
+          GROUP BY ${AGENT_KEY_SQL} HAVING COUNT(*) >= 1
+          ORDER BY avg_score DESC NULLS LAST LIMIT 1`, [thisWeekFrom, thisWeekTo]),
+
+        // Best agent last week
+        pool.query(`
+          SELECT ${AGENT_LABEL_SQL} AS agent, ROUND(AVG(g.total_percent)) AS avg_score
+          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND t.ticket_date >= $1 AND t.ticket_date < $2
+          GROUP BY ${AGENT_KEY_SQL} HAVING COUNT(*) >= 1
+          ORDER BY avg_score DESC NULLS LAST LIMIT 1`, [lastWeekFrom, lastWeekTo])
       ]);
 
       // Last week top inbox for comparison
@@ -1173,12 +1191,14 @@ app.get('/api/home', requireAuth, async (req, res) => {
         best_category: bestCat.rows[0] || null,
         best_category_last_week: lastBestCat.rows[0]?.avg_score ?? null,
         top_inbox: topInbox.rows[0] || null,
-        top_inbox_last_week_count: parseInt(lastTopInbox.rows[0]?.cnt || 0)
+        top_inbox_last_week_count: parseInt(lastTopInbox.rows[0]?.cnt || 0),
+        best_agent: bestAgent.rows[0] || null,
+        best_agent_last_week: bestAgentLast.rows[0] || null
       });
     }
 
     if (['cs_leader', 'admin'].includes(role)) {
-      const [userCount, activeSessionCount, recentLogs, weekTeam, lastWeekTeam, worstCat, bestCat, topInbox, unassigned] = await Promise.all([
+      const [userCount, activeSessionCount, recentLogs, weekTeam, lastWeekTeam, worstCat, bestCat, topInbox, unassigned, bestAgent, bestAgentLast] = await Promise.all([
         pool.query(`SELECT COUNT(*) AS cnt FROM users WHERE is_active = TRUE`),
         pool.query(`SELECT COUNT(*) AS cnt FROM session`),
         pool.query(`SELECT username, role, action, details, created_at FROM user_logs ORDER BY created_at DESC LIMIT 5`),
@@ -1231,7 +1251,25 @@ app.get('/api/home', requireAuth, async (req, res) => {
           WHERE t.deleted_at IS NULL AND g.submitted = TRUE
             AND (t.assigned_grader IS NULL OR t.assigned_grader = '')
             AND g.total_percent < 60
-          ORDER BY t.ticket_date DESC LIMIT 100`)
+          ORDER BY t.ticket_date DESC LIMIT 100`),
+
+        // Best agent this week
+        pool.query(`
+          SELECT ${AGENT_LABEL_SQL} AS agent, ROUND(AVG(g.total_percent)) AS avg_score, COUNT(*) AS cnt
+          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND t.ticket_date >= $1 AND t.ticket_date < $2
+          GROUP BY ${AGENT_KEY_SQL} HAVING COUNT(*) >= 1
+          ORDER BY avg_score DESC NULLS LAST LIMIT 1`, [thisWeekFrom, thisWeekTo]),
+
+        // Best agent last week
+        pool.query(`
+          SELECT ${AGENT_LABEL_SQL} AS agent, ROUND(AVG(g.total_percent)) AS avg_score
+          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND t.ticket_date >= $1 AND t.ticket_date < $2
+          GROUP BY ${AGENT_KEY_SQL} HAVING COUNT(*) >= 1
+          ORDER BY avg_score DESC NULLS LAST LIMIT 1`, [lastWeekFrom, lastWeekTo])
       ]);
 
       const lastTopInbox = topInbox.rows[0]?.inbox ? await pool.query(`
@@ -1275,7 +1313,9 @@ app.get('/api/home', requireAuth, async (req, res) => {
         top_inbox: topInbox.rows[0] || null,
         top_inbox_last_week_count: parseInt(lastTopInbox.rows[0]?.cnt || 0),
         unassigned_low_score: unassigned.rows,
-        available_graders: graders.rows
+        available_graders: graders.rows,
+        best_agent: bestAgent.rows[0] || null,
+        best_agent_last_week: bestAgentLast.rows[0] || null
       });
     }
 

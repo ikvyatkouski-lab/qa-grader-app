@@ -1867,54 +1867,70 @@ async function renderHome() {
 
     cards += homeCard('Team Score This Week',
       `<div class="home-big">${d.week_team_score != null ? d.week_team_score + '%' : '—'}</div>
-       <div class="home-sub">${d.week_ticket_count} tickets ${scoreTrend(d.week_team_score, d.last_week_team_score)}</div>`);
+       <div class="home-sub">${d.week_ticket_count} tickets graded</div>
+       <div class="home-vs">Last week: <strong>${d.last_week_team_score != null ? d.last_week_team_score + '%' : '—'}</strong> ${scoreTrend(d.week_team_score, d.last_week_team_score)}</div>`);
 
     if (d.worst_category) {
       cards += homeCard('Worst Category',
         `<div class="home-cat-label">${escapeHtml(CAT_LABELS[d.worst_category.category_id] || d.worst_category.category_id)}</div>
          <div class="home-big" style="color:var(--rd)">${d.worst_category.avg_score != null ? d.worst_category.avg_score + '%' : '—'}</div>
-         <div class="home-sub">vs last week ${scoreTrend(d.worst_category.avg_score, d.worst_category_last_week)}</div>`);
+         <div class="home-vs">Last week: <strong>${d.worst_category_last_week != null ? d.worst_category_last_week + '%' : '—'}</strong> ${scoreTrend(d.worst_category.avg_score, d.worst_category_last_week)}</div>`);
     }
 
     if (d.best_category) {
       cards += homeCard('Best Category',
         `<div class="home-cat-label">${escapeHtml(CAT_LABELS[d.best_category.category_id] || d.best_category.category_id)}</div>
          <div class="home-big" style="color:var(--gr)">${d.best_category.avg_score != null ? d.best_category.avg_score + '%' : '—'}</div>
-         <div class="home-sub">vs last week ${scoreTrend(d.best_category.avg_score, d.best_category_last_week)}</div>`);
+         <div class="home-vs">Last week: <strong>${d.best_category_last_week != null ? d.best_category_last_week + '%' : '—'}</strong> ${scoreTrend(d.best_category.avg_score, d.best_category_last_week)}</div>`);
     }
 
     if (d.top_inbox) {
       cards += homeCard('Busiest Inbox',
         `<div class="home-cat-label">${escapeHtml(d.top_inbox.inbox || '—')}</div>
          <div class="home-big">${d.top_inbox.cnt}</div>
-         <div class="home-sub">tickets this week · last week: ${d.top_inbox_last_week_count}</div>`);
+         <div class="home-vs">Last week: <strong>${d.top_inbox_last_week_count}</strong> ${scoreTrend(d.top_inbox.cnt, d.top_inbox_last_week_count)}</div>`);
+    }
+
+    if (d.best_agent) {
+      cards += homeCard('Best Agent This Week',
+        `<div class="home-cat-label">${escapeHtml(d.best_agent.agent || '—')}</div>
+         <div class="home-big" style="color:var(--gr)">${d.best_agent.avg_score != null ? d.best_agent.avg_score + '%' : '—'}</div>
+         <div class="home-vs">Last week: <strong>${d.best_agent_last_week?.agent ? escapeHtml(d.best_agent_last_week.agent) + ' ' + d.best_agent_last_week.avg_score + '%' : '—'}</strong></div>`);
     }
   }
 
   if (['cs_leader', 'admin'].includes(role)) {
     cards += homeCard('Team Score This Week',
       `<div class="home-big">${d.week_team_score != null ? d.week_team_score + '%' : '—'}</div>
-       <div class="home-sub">${d.week_ticket_count} tickets ${scoreTrend(d.week_team_score, d.last_week_team_score)}</div>`);
+       <div class="home-sub">${d.week_ticket_count} tickets graded</div>
+       <div class="home-vs">Last week: <strong>${d.last_week_team_score != null ? d.last_week_team_score + '%' : '—'}</strong> ${scoreTrend(d.week_team_score, d.last_week_team_score)}</div>`);
 
     if (d.worst_category) {
       cards += homeCard('Worst Category',
         `<div class="home-cat-label">${escapeHtml(CAT_LABELS[d.worst_category.category_id] || d.worst_category.category_id)}</div>
          <div class="home-big" style="color:var(--rd)">${d.worst_category.avg_score != null ? d.worst_category.avg_score + '%' : '—'}</div>
-         <div class="home-sub">vs last week ${scoreTrend(d.worst_category.avg_score, d.worst_category_last_week)}</div>`);
+         <div class="home-vs">Last week: <strong>${d.worst_category_last_week != null ? d.worst_category_last_week + '%' : '—'}</strong> ${scoreTrend(d.worst_category.avg_score, d.worst_category_last_week)}</div>`);
     }
 
     if (d.best_category) {
       cards += homeCard('Best Category',
         `<div class="home-cat-label">${escapeHtml(CAT_LABELS[d.best_category.category_id] || d.best_category.category_id)}</div>
          <div class="home-big" style="color:var(--gr)">${d.best_category.avg_score != null ? d.best_category.avg_score + '%' : '—'}</div>
-         <div class="home-sub">vs last week ${scoreTrend(d.best_category.avg_score, d.best_category_last_week)}</div>`);
+         <div class="home-vs">Last week: <strong>${d.best_category_last_week != null ? d.best_category_last_week + '%' : '—'}</strong> ${scoreTrend(d.best_category.avg_score, d.best_category_last_week)}</div>`);
     }
 
     if (d.top_inbox) {
       cards += homeCard('Busiest Inbox',
         `<div class="home-cat-label">${escapeHtml(d.top_inbox.inbox || '—')}</div>
          <div class="home-big">${d.top_inbox.cnt}</div>
-         <div class="home-sub">tickets this week · last week: ${d.top_inbox_last_week_count}</div>`);
+         <div class="home-vs">Last week: <strong>${d.top_inbox_last_week_count}</strong> ${scoreTrend(d.top_inbox.cnt, d.top_inbox_last_week_count)}</div>`);
+    }
+
+    if (d.best_agent) {
+      cards += homeCard('Best Agent This Week',
+        `<div class="home-cat-label">${escapeHtml(d.best_agent.agent || '—')}</div>
+         <div class="home-big" style="color:var(--gr)">${d.best_agent.avg_score != null ? d.best_agent.avg_score + '%' : '—'}</div>
+         <div class="home-vs">Last week: <strong>${d.best_agent_last_week?.agent ? escapeHtml(d.best_agent_last_week.agent) + ' ' + d.best_agent_last_week.avg_score + '%' : '—'}</strong></div>`);
     }
 
     cards += homeCard('Users',
