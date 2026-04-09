@@ -1329,7 +1329,7 @@ function parseImportedCsv(text, options = {}){
   const sep = ';';
 
   const firstField = (parseDelimitedLine(records[0], sep)[0] || '').trim();
-  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(firstField)) {
+  if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(firstField)) {
     records.unshift(HEADERLESS_BOT_CSV_HEADER);
   }
 
@@ -1369,7 +1369,7 @@ function parseImportedCsv(text, options = {}){
 async function importCsvFile(file, options = {}){
   const {
     submitted = false,
-    chunkSize = 100,
+    chunkSize = 500,
     successLabel = submitted ? 'Imported and submitted' : 'Imported and saved'
   } = options;
 
@@ -4850,7 +4850,7 @@ document.getElementById('csv-in').addEventListener('change', async function(e){
   try {
     await importCsvFile(file, {
       submitted: false,
-      chunkSize: 100,
+      chunkSize: 500,
       successLabel: 'Imported and saved'
     });
   } catch(err){
@@ -4868,7 +4868,7 @@ document.getElementById('csv-in-grader').addEventListener('change', async functi
   try {
     await importCsvFile(file, {
       submitted: true,
-      chunkSize: 100,
+      chunkSize: 500,
       successLabel: 'Imported and submitted'
     });
   } catch(err){
