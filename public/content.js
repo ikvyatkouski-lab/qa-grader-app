@@ -889,12 +889,8 @@ function safeCell(row, key){
   return row[key] ?? '';
 }
 
-function shouldSkipImportedRow(row){
-  const created = String(safeCell(row, 'Created Time') ?? '').trim();
-  if(!created) return true;
-  if(created.toUpperCase() === 'NA' || created.toLowerCase() === 'nan') return true;
-  if(/\bNA\b/i.test(created)) return true;
-  return !ticketDateFromCreatedTime(created);
+function shouldSkipImportedRow(_row){
+  return false;
 }
 
 function parseDelimitedLine(line, sep = ';'){
@@ -1378,7 +1374,7 @@ async function importCsvFile(file, options = {}){
   } = options;
 
   const text = await file.text();
-  const { imported, parsedTickets, localGrades, skippedRows } = parseImportedCsv(text, { submitted });
+  const { imported, parsedTickets, localGrades } = parseImportedCsv(text, { submitted });
 
   const serverTickets = parsedTickets.map(t => buildServerTicket(t));
 
@@ -1435,8 +1431,7 @@ async function importCsvFile(file, options = {}){
 
   await loadTicketsFromServer();
   if (submitted) switchTab('s');
-  const skippedSuffix = skippedRows ? `, skipped ${skippedRows} row${skippedRows !== 1 ? 's' : ''} with invalid Created Time` : '';
-  toast(`${successLabel} ${imported} ticket${imported !== 1 ? 's' : ''}${skippedSuffix} ✓`);
+  toast(`${successLabel} ${imported} ticket${imported !== 1 ? 's' : ''} ✓`);
 }
 
 function finalCause(g, id){
