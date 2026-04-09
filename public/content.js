@@ -327,6 +327,7 @@ function defaultSubmissionFilters(){
 
 let F = defaultTicketFilters();
 let SF = defaultSubmissionFilters();
+let NF = { assignment: 'all' };
 let qfOpen = false;
 let charts = {};
 let toastTimer = null;
@@ -496,12 +497,9 @@ function reviewAssignmentTickets(tickets = TICKETS) {
     const g = grades[String(ticket.id)];
     const score = metricNumber(g?.totalPercent);
     const ticketDate = ticket.date || '';
-    const isUnassigned = !String(ticket.assignedGrader || '').trim();
-    const isNewImportedTicket = isUnassigned
-      && isOnOrAfterDate(ticketDate, NEW_TICKET_ASSIGNMENT_CUTOFF_DATE)
+    const isNewImportedTicket = isOnOrAfterDate(ticketDate, NEW_TICKET_ASSIGNMENT_CUTOFF_DATE)
       && (!g || !g.submitted);
-    const isLowScoreReviewTicket = isUnassigned
-      && !!g?.submitted
+    const isLowScoreReviewTicket = !!g?.submitted
       && score != null
       && score <= 60
       && isOnOrAfterDate(ticketDate, LOW_SCORE_REVIEW_CUTOFF_DATE);
@@ -1875,10 +1873,16 @@ function closeAssignMenus() {
   document.querySelectorAll('[data-assign-pop]').forEach(pop => {
     pop.style.display = 'none';
   });
+  document.getElementById('detail-assign-pop')?.style.setProperty('display', 'none');
 }
 
 function closeAssignMenusOnOutsideClick(event) {
-  if (event.target.closest('[data-assign-toggle]') || event.target.closest('[data-assign-pop]')) return;
+  if (
+    event.target.closest('[data-assign-toggle]') ||
+    event.target.closest('[data-assign-pop]') ||
+    event.target.closest('#detail-assign-toggle') ||
+    event.target.closest('#detail-assign-pop')
+  ) return;
   closeAssignMenus();
 }
 
@@ -2059,7 +2063,7 @@ async function renderHome() {
         : (Array.isArray(d.unassigned_low_score) ? d.unassigned_low_score.length : 0);
       cards += homeCard('New Review Tickets',
         `<div class="home-big" style="color:${newReviewCount > 0 ? 'var(--am)' : 'var(--mu)'}">${newReviewCount}</div>
-         <div class="home-sub">tickets ready for assignment review</div>
+         <div class="home-sub">tickets in review queue</div>
          <button class="btn-p home-action-btn" id="home-go-review">Open</button>`,
         { accent: newReviewCount > 0 });
     }
@@ -2075,7 +2079,58 @@ async function renderHome() {
     cards += homeCard('Recent Activity', logRows || '<span style="color:var(--mu)">No activity yet</span>', { wide: true });
   }
 
-  wrap.innerHTML = `<div class="home-grid">${cards}</div>`;
+  let listsHtml = '';
+  if (role === 'qa_grader') {
+    const toGrade = d.to_grade || [];
+    const recentlyGraded = d.recently_graded || [];
+
+    const toGradeRows = toGrade.length
+      ? toGrade.map(t => `<tr class="home-list-row" data-id="${t.id}">
+          <td>${escapeHtml(t.subject || t.id)}</td>
+          <td>${escapeHtml(t.agent || '—')}</td>
+          <td>${escapeHtml(t.inbox || '—')}</td>
+          <td>${t.ticket_date ? t.ticket_date.slice(0,10) : '—'}</td>
+          <td><span style="color:var(--am);font-weight:600">Pending</span></td>
+        </tr>`).join('')
+      : `<tr><td colspan="5" style="color:var(--mu);padding:12px">No tickets in queue</td></tr>`;
+
+    const gradedRows = recentlyGraded.length
+      ? recentlyGraded.map(t => `<tr class="home-list-row" data-id="${t.id}">
+          <td>${escapeHtml(t.subject || t.id)}</td>
+          <td>${escapeHtml(t.agent || '—')}</td>
+          <td>${escapeHtml(t.inbox || '—')}</td>
+          <td>${t.ticket_date ? t.ticket_date.slice(0,10) : '—'}</td>
+          <td style="color:var(--gr);font-weight:600">${t.total_percent != null ? t.total_percent + '%' : '—'}</td>
+        </tr>`).join('')
+      : `<tr><td colspan="5" style="color:var(--mu);padding:12px">No graded tickets yet</td></tr>`;
+
+    listsHtml = `
+      <div class="home-list-section">
+        <div class="home-list-title">My Queue <span class="home-list-count">${toGrade.length}</span></div>
+        <table class="home-list-table">
+          <thead><tr><th>Subject</th><th>Agent</th><th>Inbox</th><th>Date</th><th>Status</th></tr></thead>
+          <tbody>${toGradeRows}</tbody>
+        </table>
+      </div>
+      <div class="home-list-section">
+        <div class="home-list-title">Recently Graded by Me <span class="home-list-count">${recentlyGraded.length}</span></div>
+        <table class="home-list-table">
+          <thead><tr><th>Subject</th><th>Agent</th><th>Inbox</th><th>Date</th><th>Score</th></tr></thead>
+          <tbody>${gradedRows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  wrap.innerHTML = `<div class="home-grid">${cards}</div>${listsHtml}`;
+
+  // Click on ticket row goes to that ticket
+  wrap.querySelectorAll('.home-list-row[data-id]').forEach(row => {
+    row.addEventListener('click', () => {
+      const tid = parseInt(row.dataset.id);
+      const ticket = TICKETS.find(t => t.id === tid);
+      if (ticket) pickTicket(ticket);
+    });
+  });
 
   // Wire up buttons
   document.getElementById('home-go-new')?.addEventListener('click', () => switchTab('n'));
@@ -2910,6 +2965,50 @@ function renderSubsFilters() {
   });
 }
 
+function renderNewTicketFilters(tickets) {
+  const cont = document.getElementById('hfbar-n');
+  if (!cont) return;
+  if (user?.role !== 'cs_leader') {
+    cont.innerHTML = '';
+    return;
+  }
+
+  const assignedCount = tickets.filter(ticket => !!String(ticket.assignedGrader || '').trim()).length;
+  const unassignedCount = tickets.length - assignedCount;
+
+  cont.innerHTML = `<div class="hfbar">
+    <div class="hfbar-grp">
+      <span class="hfbar-lbl">Assignment</span>
+      <select id="new-filter-assignment">
+        <option value="all" ${NF.assignment === 'all' ? 'selected' : ''}>All</option>
+        <option value="assigned" ${NF.assignment === 'assigned' ? 'selected' : ''}>Assigned</option>
+        <option value="unassigned" ${NF.assignment === 'unassigned' ? 'selected' : ''}>Unassigned</option>
+      </select>
+    </div>
+    <div class="hfbar-grp">
+      <span class="hfbar-lbl">Assigned</span>
+      <div class="hfbar-stat">${assignedCount}</div>
+    </div>
+    <div class="hfbar-grp">
+      <span class="hfbar-lbl">Unassigned</span>
+      <div class="hfbar-stat">${unassignedCount}</div>
+    </div>
+    <button class="hfbar-clear" id="hfbar-n-clear">Clear</button>
+  </div>`;
+
+  cont.querySelector('#new-filter-assignment')?.addEventListener('change', e => {
+    NF.assignment = e.target.value;
+    resetPager('newTickets');
+    renderNewTickets();
+  });
+
+  cont.querySelector('#hfbar-n-clear')?.addEventListener('click', () => {
+    NF = { assignment: 'all' };
+    resetPager('newTickets');
+    renderNewTickets();
+  });
+}
+
 function renderMyFilters() {
   const cont = document.getElementById('hfbar-m');
   if (!cont) return;
@@ -3431,14 +3530,17 @@ function renderDetail(){
         ${t.frontUrl ? `<span class="mtag">🔗 <a href="${t.frontUrl}" target="_blank" rel="noopener noreferrer" style="color:inherit">Front URL</a></span>` : ''}
         ${badge}
       </div></div>
-    <div class="sec"><div class="slbl">Conversation${t.frontUrl || canAssignTicket ? `<span style="display:inline-flex;gap:8px;align-items:center;margin-left:8px">${t.frontUrl ? `<button class="bsm" style="font-size:10px" id="reload-conv">↻ Reload</button>` : ''}${canAssignTicket ? `<span class="assign-menu" style="position:relative;display:inline-block">
-      <button class="bsm" style="font-size:10px" type="button" id="detail-assign-toggle">Assign</button>
-      <span class="assign-pop" id="detail-assign-pop" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:20;min-width:220px;padding:10px;border:1px solid var(--bd2);border-radius:10px;background:var(--sf);box-shadow:0 16px 40px rgba(0,0,0,.16)">
-        <select id="detail-assign-select" style="width:100%;margin-bottom:8px">
+    <div class="sec"><div class="slbl">Conversation${t.frontUrl || canAssignTicket ? `<span style="display:inline-flex;gap:8px;align-items:center;margin-left:8px">${t.frontUrl ? `<button class="bsm" style="font-size:10px" id="reload-conv">↻ Reload</button>` : ''}${canAssignTicket ? `<span class="assign-menu">
+      <button class="bsm assign-trigger ${String(t.assignedGrader || '').trim() ? 'ac' : ''}" style="font-size:10px" type="button" id="detail-assign-toggle">${String(t.assignedGrader || '').trim() ? 'Reassign' : 'Assign'}</button>
+      <span class="assign-pop" id="detail-assign-pop" style="display:none">
+        <span class="assign-pop-title">${String(t.assignedGrader || '').trim() ? `Assigned to ${escapeHtml(String(t.assignedGrader || '').trim())}` : 'Assign ticket'}</span>
+        <span class="assign-pop-row">
+        <select class="assign-select" id="detail-assign-select">
           <option value="">Select grader</option>
           ${graderOptions}
         </select>
-        <button class="btn-p" type="button" id="detail-assign-confirm" style="width:100%">Assign</button>
+        <button class="btn-p assign-confirm" type="button" id="detail-assign-confirm">${String(t.assignedGrader || '').trim() ? 'Update' : 'Assign'}</button>
+        </span>
       </span>
     </span>` : ''}</span>` : ''}</div><div class="conv">${(t.conv && t.conv.length) ? t.conv.map(m => {
       const isNote = m.s === 'note';
@@ -3470,8 +3572,9 @@ function renderDetail(){
   if (assignToggle && assignPop) {
     assignToggle.addEventListener('click', e => {
       e.stopPropagation();
+      const wasOpen = assignPop.style.display !== 'none';
       closeAssignMenus();
-      assignPop.style.display = assignPop.style.display === 'none' ? '' : 'none';
+      assignPop.style.display = wasOpen ? 'none' : 'flex';
     });
   }
 
@@ -3480,6 +3583,7 @@ function renderDetail(){
       e.stopPropagation();
       const grader = assignSelect.value || '';
       try {
+        closeAssignMenus();
         await assignTickets([t.id], grader);
         toast(`Assigned ticket to ${grader} ✓`);
         await loadTicketsFromServer();
@@ -3676,11 +3780,22 @@ function renderNewTickets() {
   if (!countEl || !thead || !tbody || !titleEl) return;
 
   const isCsLeader = user?.role === 'cs_leader';
-  const tickets = isCsLeader ? reviewAssignmentTickets() : TICKETS.filter(t => isNewAgentTicket(t.id));
+  const allTickets = isCsLeader ? reviewAssignmentTickets() : TICKETS.filter(t => isNewAgentTicket(t.id));
+  renderNewTicketFilters(allTickets);
+  const tickets = isCsLeader
+    ? allTickets.filter(ticket => {
+        const isAssigned = !!String(ticket.assignedGrader || '').trim();
+        if (NF.assignment === 'assigned') return isAssigned;
+        if (NF.assignment === 'unassigned') return !isAssigned;
+        return true;
+      })
+    : allTickets;
   const pageData = paginateItems(tickets, 'newTickets');
   titleEl.textContent = isCsLeader ? 'New Tickets' : 'New Tickets';
   countEl.textContent = isCsLeader
-    ? (tickets.length ? `${tickets.length} new ticket${tickets.length !== 1 ? 's' : ''} for review` : 'No new tickets for review')
+    ? (allTickets.length
+      ? `${tickets.length} of ${allTickets.length} ticket${allTickets.length !== 1 ? 's' : ''} in review queue`
+      : 'No new tickets for review')
     : (tickets.length ? `${tickets.length} new graded ticket${tickets.length !== 1 ? 's' : ''}` : 'No new graded tickets');
 
   if (!tickets.length) {
@@ -3698,6 +3813,7 @@ function renderNewTickets() {
     thead.innerHTML = `<tr>
       <th>Open</th>
       <th>Assign</th>
+      <th>Assignee</th>
       <th>Week</th>
       <th>Ticket date</th>
       <th>Agent</th>
@@ -3728,6 +3844,7 @@ function renderNewTickets() {
     tbody.innerHTML = pageData.items.map(t => {
       const g = grades[t.id] || blankG();
       const isSubmitted = !!g.submitted;
+      const bot = t.bot || {};
       const aR = isSubmitted ? agentRaw(t.id) : null;
       const bR = botRaw(t);
       const aD = isSubmitted ? agentDenom(t.id) : null;
@@ -3738,15 +3855,19 @@ function renderNewTickets() {
       const diff = isSubmitted ? aP - bP : null;
       const tWk = t.week || weekOf(t.date || t.createdTime);
       const convId = convIdFromFrontUrl(t.frontUrl);
+      const assignee = String(t.assignedGrader || '').trim();
       const assignMenu = graderOpts
-        ? `<div class="assign-menu" style="position:relative;display:inline-block">
-             <button class="bsm" type="button" data-assign-toggle="${t.id}">Assign</button>
-             <div class="assign-pop" data-assign-pop="${t.id}" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:20;min-width:220px;padding:10px;border:1px solid var(--bd2);border-radius:10px;background:var(--sf);box-shadow:0 16px 40px rgba(0,0,0,.16)">
-               <select data-assign-select="${t.id}" style="width:100%;margin-bottom:8px">
+        ? `<div class="assign-menu">
+             <button class="bsm assign-trigger ${assignee ? 'ac' : ''}" type="button" data-assign-toggle="${t.id}">${assignee ? 'Reassign' : 'Assign'}</button>
+             <div class="assign-pop" data-assign-pop="${t.id}">
+               <div class="assign-pop-title">${assignee ? `Assigned to ${escapeHtml(assignee)}` : 'Assign ticket'}</div>
+               <div class="assign-pop-row">
+               <select class="assign-select" data-assign-select="${t.id}">
                  <option value="">Select grader</option>
                  ${graderOpts}
                </select>
-               <button class="btn-p" type="button" data-assign-confirm="${t.id}" style="width:100%">Assign</button>
+               <button class="btn-p assign-confirm" type="button" data-assign-confirm="${t.id}">${assignee ? 'Update' : 'Assign'}</button>
+               </div>
              </div>
            </div>`
         : `<span style="color:var(--mu)">No graders</span>`;
@@ -3754,6 +3875,7 @@ function renderNewTickets() {
       return `<tr>
         <td><button class="tdm-open" onclick="openTicketDetail('${t.id}')">Open</button></td>
         <td>${assignMenu}</td>
+        <td>${assignee ? `<span class="assignee-chip">${escapeHtml(assignee)}</span>` : `<span class="assignee-chip empty">Unassigned</span>`}</td>
         <td>${tWk}</td>
         <td>${fmtDate(t.date || t.createdTime)}</td>
         <td>${t.agent || ''}</td>
@@ -3770,20 +3892,26 @@ function renderNewTickets() {
           ? `<span class="schip" style="background:${af ? 'var(--rds)' : aP >= 80 ? 'var(--grs)' : 'var(--acs)'};color:${af ? 'var(--rd)' : scol(aP)}">${af ? '0%' : aP + '%'}</span>`
           : `<span class="schip" style="background:var(--bg2);color:var(--mu)">Pending</span>`}</td>
         <td class="cn" style="color:${diff > 0 ? 'var(--gr)' : diff < 0 ? 'var(--rd)' : 'var(--mu)'}">${diff == null ? '—' : `${diff > 0 ? '+' : ''}${diff}%`}</td>
-        <td>${isSubmitted ? (g.grader || user?.name || 'Bot') : '—'}</td>
+        <td>${isSubmitted ? (g.grader || user?.name || 'Bot') : 'Bot'}</td>
         ${C.map(c => {
-          if (!isSubmitted) return `<td><span class="cn" style="color:var(--mu)">—</span></td><td class="cc">—</td>`;
+          if (!isSubmitted) {
+            const botValue = bot[c.id];
+            const botCause = bot[c.id + 'Cause'] || '';
+            const botPct = isNA(botValue) ? null : pct(nv(botValue), c.max);
+            const botCol = botPct === null ? 'var(--mu2)' : scol(botPct);
+            return `<td><span class="cn" style="color:${botCol}">${isNA(botValue) ? 'NA' : nv(botValue)}</span></td><td class="cc">${botCause && botCause !== 'NA' ? botCause : 'NA'}</td>`;
+          }
           const v = g.scores[c.id];
           const p = isNA(v) ? null : pct(nv(v), c.max);
           const col = p === null ? 'var(--mu2)' : scol(p);
           return `<td><span class="cn" style="color:${col}">${isNA(v) ? 'NA' : nv(v)}</span></td><td class="cc">${finalCause(g, c.id)}</td>`;
         }).join('')}
-        <td style="color:${isSubmitted && g.af.autofail ? 'var(--rd)' : 'var(--mu)'}">${isSubmitted ? (g.af.autofail ? 'TRUE' : 'FALSE') : '—'}</td>
-        <td class="cc">${isSubmitted ? finalAFCause(g, 'autofail') : '—'}</td>
-        <td>${isSubmitted ? (isNA(g.af.bug_esc) ? 'NA' : g.af.bug_esc) : '—'}</td>
-        <td class="cc">${isSubmitted ? finalAFCause(g, 'bug_esc') : '—'}</td>
-        <td>${isSubmitted ? (isNA(g.af.post_bug) ? 'NA' : g.af.post_bug) : '—'}</td>
-        <td class="cc">${isSubmitted ? finalAFCause(g, 'post_bug') : '—'}</td>
+        <td style="color:${isSubmitted ? (g.af.autofail ? 'var(--rd)' : 'var(--mu)') : (bot.af?.autofail ? 'var(--rd)' : 'var(--mu)')}">${isSubmitted ? (g.af.autofail ? 'TRUE' : 'FALSE') : (bot.af?.autofail ? 'TRUE' : 'FALSE')}</td>
+        <td class="cc">${isSubmitted ? finalAFCause(g, 'autofail') : ((bot.afCauses?.autofail && bot.afCauses.autofail !== 'NA') ? bot.afCauses.autofail : 'NA')}</td>
+        <td>${isSubmitted ? (isNA(g.af.bug_esc) ? 'NA' : g.af.bug_esc) : (isNA(bot.af?.bug_esc) ? 'NA' : bot.af.bug_esc)}</td>
+        <td class="cc">${isSubmitted ? finalAFCause(g, 'bug_esc') : ((bot.afCauses?.bug_esc && bot.afCauses.bug_esc !== 'NA') ? bot.afCauses.bug_esc : 'NA')}</td>
+        <td>${isSubmitted ? (isNA(g.af.post_bug) ? 'NA' : g.af.post_bug) : (isNA(bot.af?.post_bug) ? 'NA' : bot.af.post_bug)}</td>
+        <td class="cc">${isSubmitted ? finalAFCause(g, 'post_bug') : ((bot.afCauses?.post_bug && bot.afCauses.post_bug !== 'NA') ? bot.afCauses.post_bug : 'NA')}</td>
         <td class="cc">${isSubmitted ? (g.qaFeedback || '') : '—'}</td>
         <td class="cc">${isSubmitted ? (g.reflection || '') : '—'}</td>
         <td><button class="bsm" onclick="deleteTicketFromTable('${t.id}')">Delete</button></td>
@@ -3794,11 +3922,10 @@ function renderNewTickets() {
       btn.addEventListener('click', e => {
         e.stopPropagation();
         const id = btn.dataset.assignToggle;
-        tbody.querySelectorAll('[data-assign-pop]').forEach(pop => {
-          if (pop.dataset.assignPop !== id) pop.style.display = 'none';
-        });
         const pop = tbody.querySelector(`[data-assign-pop="${id}"]`);
-        if (pop) pop.style.display = pop.style.display === 'none' ? '' : 'none';
+        const wasOpen = pop && pop.style.display !== 'none';
+        closeAssignMenus();
+        if (pop) pop.style.display = wasOpen ? 'none' : 'flex';
       });
     });
 
@@ -3809,6 +3936,7 @@ function renderNewTickets() {
         const select = tbody.querySelector(`[data-assign-select="${id}"]`);
         const grader = select?.value || '';
         try {
+          closeAssignMenus();
           await assignTickets([id], grader);
           toast(`Assigned ticket to ${grader} ✓`);
           await loadTicketsFromServer();

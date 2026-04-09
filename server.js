@@ -1149,7 +1149,7 @@ app.get('/api/home', requireAuth, async (req, res) => {
     if (role === 'qa_grader') {
       const graderKeys = currentGraderKeys(u);
 
-      const [pending, weekTeam, lastWeekTeam, worstCat, bestCat, topInbox, bestAgent, bestAgentLast] = await Promise.all([
+      const [pending, weekTeam, lastWeekTeam, worstCat, bestCat, topInbox, bestAgent, bestAgentLast, toGradeList, gradedList] = await Promise.all([
         // Tickets pending grading assigned to this grader
         pool.query(`
           SELECT COUNT(*) AS cnt FROM tickets t
@@ -1217,7 +1217,33 @@ app.get('/api/home', requireAuth, async (req, res) => {
           WHERE t.deleted_at IS NULL AND g.submitted = TRUE
             AND t.ticket_date >= $1 AND t.ticket_date < $2
           GROUP BY ${AGENT_KEY_SQL} HAVING COUNT(*) >= 1
-          ORDER BY avg_score DESC NULLS LAST LIMIT 1`, [lastWeekFrom, lastWeekTo])
+          ORDER BY avg_score DESC NULLS LAST LIMIT 1`, [lastWeekFrom, lastWeekTo]),
+
+        // Tickets to grade: assigned to this grader, not yet submitted
+        pool.query(`
+          SELECT t.id, t.subject, t.agent, t.inbox, t.ticket_date, t.assigned_grader,
+            g.id AS grade_id, g.submitted
+          FROM tickets t
+          LEFT JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL
+            AND (g.id IS NULL OR g.submitted = FALSE)
+            AND LOWER(BTRIM(COALESCE(t.assigned_grader, ''))) = ANY($1::text[])
+          ORDER BY t.ticket_date DESC
+          LIMIT 50`, [graderKeys]),
+
+        // Recently graded by this grader (submitted)
+        pool.query(`
+          SELECT t.id, t.subject, t.agent, t.inbox, t.ticket_date,
+            g.id AS grade_id, g.total_percent, g.submitted_at
+          FROM tickets t
+          JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
+          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
+            AND (
+              LOWER(BTRIM(COALESCE(g.grader_name, ''))) = ANY($1::text[])
+              OR g.grader_user_id = $2
+            )
+          ORDER BY g.submitted_at DESC
+          LIMIT 50`, [graderKeys, u.id])
       ]);
 
       // Last week top inbox for comparison
@@ -1258,7 +1284,9 @@ app.get('/api/home', requireAuth, async (req, res) => {
         top_inbox: topInbox.rows[0] || null,
         top_inbox_last_week_count: parseInt(lastTopInbox.rows[0]?.cnt || 0),
         best_agent: bestAgent.rows[0] || null,
-        best_agent_last_week: bestAgentLast.rows[0] || null
+        best_agent_last_week: bestAgentLast.rows[0] || null,
+        to_grade: toGradeList.rows,
+        recently_graded: gradedList.rows
       });
     }
 
