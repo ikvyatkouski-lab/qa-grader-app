@@ -4607,9 +4607,7 @@ async function renderAnalytics(){
   </div>
   <div class="cgrid">
     <div class="ccard wide"><div class="ctitle">Weekly Ranking By General Score</div><div class="rank-scroll"><table class="atbl" id="atbl-general"></table></div></div>
-    <div class="ccard"><div class="ctitle">Criteria avg — Grader vs Bot</div><div class="cwrap tall"><canvas id="ch-crit"></canvas></div></div>
-    <div class="ccard"><div class="ctitle">Grader score distribution</div><div class="cwrap tall"><canvas id="ch-dist"></canvas></div></div>
-    <div class="ccard wide"><div class="ctitle">Weekly Ranking By Grader</div><div class="rank-scroll"><table class="atbl" id="atbl-grader"></table></div></div>
+<div class="ccard wide"><div class="ctitle">Weekly Ranking By Grader</div><div class="rank-scroll"><table class="atbl" id="atbl-grader"></table></div></div>
     <div class="ccard wide"><div class="ctitle">Weekly Ranking By Bot</div><div class="rank-scroll"><table class="atbl" id="atbl-bot"></table></div></div>
   </div>`}`;
 
@@ -4642,63 +4640,6 @@ async function renderAnalytics(){
   Chart.defaults.color = '#6b7189';
   Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
   Chart.defaults.font.family = 'DM Sans';
-
-  const graderDone = done.filter(t => isHumanGradedTicket(t.id));
-  const cL = C.map(c => c.label.length > 16 ? c.label.slice(0, 16) + '…' : c.label);
-  const aA = C.map(c => {
-    const vs = graderDone.map(t => nv(grades[t.id].scores[c.id]));
-    return vs.length ? Math.round(vs.reduce((a, b) => a + b, 0) / vs.length) : 0;
-  });
-  const bA = C.map(c => {
-    const vs = done.map(t => nv(t.bot?.[c.id]));
-    return vs.length ? Math.round(vs.reduce((a, b) => a + b, 0) / vs.length) : 0;
-  });
-
-  charts.crit = new Chart(document.getElementById('ch-crit'), {
-    type:'bar',
-    data:{
-      labels:cL,
-      datasets:[
-        {label:'Grader',data:aA,backgroundColor:'rgba(79,124,255,0.75)',borderRadius:3,borderSkipped:false},
-        {label:'Bot',data:bA,backgroundColor:'rgba(157,125,240,0.55)',borderRadius:3,borderSkipped:false}
-      ]
-    },
-    options:{
-      responsive:true,
-      maintainAspectRatio:false,
-      plugins:{legend:{position:'top',labels:{boxWidth:10,padding:12,font:{size:11}}}},
-      scales:{
-        x:{ticks:{font:{size:9},maxRotation:35},grid:{display:false}},
-        y:{beginAtZero:true,grid:{color:'rgba(255,255,255,0.05)'}}
-      }
-    }
-  });
-
-  const bands = ['0% (auto-fail)','1–49%','50–69%','70–84%','85–100%'];
-  const dist = [0,0,0,0,0];
-
-  graderDone.forEach(t => {
-    const p = pct(agentRaw(t.id), agentDenom(t.id));
-    dist[p === 0 ? 0 : p < 50 ? 1 : p < 70 ? 2 : p < 85 ? 3 : 4]++;
-  });
-
-  charts.dist = new Chart(document.getElementById('ch-dist'), {
-    type:'doughnut',
-    data:{
-      labels:bands,
-      datasets:[{
-        data:dist,
-        backgroundColor:['rgba(240,78,78,0.9)','rgba(240,78,78,0.5)','rgba(240,160,32,0.8)','rgba(79,124,255,0.8)','rgba(30,201,122,0.8)'],
-        borderWidth:0,
-        hoverOffset:5
-      }]
-    },
-    options:{
-      responsive:true,
-      maintainAspectRatio:false,
-      plugins:{legend:{position:'right',labels:{boxWidth:10,padding:12,font:{size:11}}}}
-    }
-  });
 
   renderWeeklyRankingMatrix('atbl-general', weeklyGeneralRows, filteredGeneralRows, 'No general-score ranking data for the current filters.');
   renderWeeklyRankingMatrix('atbl-grader', weeklyGraderRows, filteredGraderRows, 'No grader ranking data for the current filters.');
@@ -5160,8 +5101,6 @@ async function buildAnalyticsReportHtml() {
 
   const kpis = document.querySelector('#an-content .kpis')?.innerHTML || '';
   const activeChips = analyticsActiveChips();
-  const critChart = document.getElementById('ch-crit')?.toDataURL('image/png') || '';
-  const distChart = document.getElementById('ch-dist')?.toDataURL('image/png') || '';
   const sections = [
     { title: 'Weekly Ranking By General Score', id: 'atbl-general' },
     { title: 'Weekly Ranking By Grader', id: 'atbl-grader' },
@@ -5180,10 +5119,6 @@ async function buildAnalyticsReportHtml() {
     <div class="meta">Generated on ${new Date().toLocaleString()}</div>
     ${activeChips ? `<div class="chips">${activeChips.replace(/class="analytics-chip"/g, 'class="chip"').replace(/analytics-active/g, '')}</div>` : ''}
     ${kpis ? `<div class="kpis">${kpis}</div>` : ''}
-    <div class="chart-grid">
-      ${critChart ? `<div class="chart-card"><h2>Criteria Avg — Grader vs Bot</h2><img src="${critChart}" alt="Criteria chart"></div>` : ''}
-      ${distChart ? `<div class="chart-card"><h2>Grader Score Distribution</h2><img src="${distChart}" alt="Distribution chart"></div>` : ''}
-    </div>
     ${sections.map(section => {
       const table = document.getElementById(section.id);
       return table ? `<div class="table-card"><h2>${section.title}</h2>${table.outerHTML}</div>` : '';
