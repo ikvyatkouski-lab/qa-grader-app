@@ -548,30 +548,14 @@ function analyticsCategoryFilterSql(paramIndex) {
       FROM grade_breakdown gb
       WHERE gb.grade_id = g.id
         AND gb.category_id = ANY($${paramIndex}::text[])
-        AND (
-          (gb.category_id = 'grammar' AND CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric END < 5) OR
-          (gb.category_id = 'tone' AND CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric END < 5) OR
-          (gb.category_id = 'timeliness' AND CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric END < 10) OR
-          (gb.category_id = 'efficiency' AND CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric END < 15) OR
-          (gb.category_id = 'probing' AND CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric END < 10) OR
-          (gb.category_id = 'problem' AND CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric END < 20) OR
-          (gb.category_id = 'education' AND CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric END < 15) OR
-          (gb.category_id = 'resolution' AND CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric END < 20) OR
-          (gb.category_id = 'docs' AND CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric END < 10) OR
-          (gb.category_id = 'chatbot' AND CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric END < 16) OR
-          (gb.category_id = 'tag_usage' AND CASE WHEN gb.score ~ '^-?\\d+(\\.\\d+)?$' THEN gb.score::numeric END < 10)
-        )
+        AND gb.score ~ '^-?\\d+(\\.\\d+)?$'
     )
     OR EXISTS (
       SELECT 1
       FROM grade_flags gf
       WHERE gf.grade_id = g.id
         AND gf.flag_id = ANY($${paramIndex}::text[])
-        AND (
-          (gf.flag_id = 'autofail' AND LOWER(COALESCE(gf.value::text, '')) = 'true') OR
-          (gf.flag_id = 'bug_esc' AND CASE WHEN gf.value ~ '^-?\\d+(\\.\\d+)?$' THEN gf.value::numeric END < 20) OR
-          (gf.flag_id = 'post_bug' AND CASE WHEN gf.value ~ '^-?\\d+(\\.\\d+)?$' THEN gf.value::numeric END < 20)
-        )
+        AND gf.value IS NOT NULL AND gf.value != ''
     )
   )`;
 }
@@ -1323,15 +1307,14 @@ app.get('/api/home', requireAuth, async (req, res) => {
             AND t.ticket_date >= $1 AND t.ticket_date < $2
           GROUP BY t.inbox ORDER BY cnt DESC LIMIT 1`, [thisWeekFrom, thisWeekTo]),
 
-        // Unassigned new tickets imported from 2026-04-01 onward
-        // plus unassigned reviewed tickets with score <= 60% from 2026-03-30 onward
+        // New tickets imported from 2026-04-01 onward
+        // plus reviewed tickets with score <= 60% from 2026-03-30 onward
         pool.query(`
           SELECT t.id, t.subject, t.agent, t.inbox, t.ticket_date, t.week,
-            g.total_percent, g.grader_name
+            t.assigned_grader, g.total_percent, g.grader_name
           FROM tickets t
           LEFT JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
           WHERE t.deleted_at IS NULL
-            AND (t.assigned_grader IS NULL OR t.assigned_grader = '')
             AND (
               (t.ticket_date >= $1 AND (g.id IS NULL OR g.submitted = FALSE))
               OR
