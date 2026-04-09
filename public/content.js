@@ -1620,7 +1620,7 @@ function renderNotifications() {
   itemsHost.querySelectorAll('[data-notif-open]').forEach(btn => {
     btn.addEventListener('click', () => {
       setNotifMenuOpen(false);
-      openTicketDetail(btn.dataset.notifOpen, { fromNotification: true });
+      pickTicket(parseInt(btn.dataset.notifOpen));
     });
   });
 }
