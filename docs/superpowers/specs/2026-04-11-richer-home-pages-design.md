@@ -43,7 +43,7 @@ No new files are introduced — all changes stay within the existing three front
 - **Banner**: greeting + team summary ("Team score 85% · 12 graded today · 3 need review") + CTA → review queue
 - **Hero strip**: Team Score This Week, Graded Today, Need Review count (coloured amber if >0), Active Sessions
 - **Left col**: Category breakdown bars (all categories) + Team score trend sparkline
-- **Right col**: Agent leaderboard (top 5) + Recent Activity log (last 3 entries) + Notifications (last 1)
+- **Right col**: Agent leaderboard (all agents) + Recent Activity log (last 3 entries) + Notifications (last 3)
 - **Review panel** (full-width, below): see section below
 
 ---

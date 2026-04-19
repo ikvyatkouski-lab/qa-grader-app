@@ -3,3 +3,6 @@ node_modules
 .DS_Store
 .claude/
 QA_grader/
+.superpowers/
+docs/
+docs/superpowers/specs/2026-04-11-richer-home-pages-design.md
