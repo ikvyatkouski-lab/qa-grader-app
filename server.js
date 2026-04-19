@@ -373,6 +373,15 @@ async function ensureLogsTable() {
   await pool.query(`CREATE INDEX IF NOT EXISTS user_logs_action_idx ON user_logs (action)`);
 }
 
+async function ensureSettingsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key   text PRIMARY KEY,
+      value text NOT NULL
+    )
+  `);
+}
+
 async function logAction(req, action, details = {}) {
   try {
     const u = req.session?.user;
@@ -2671,7 +2680,7 @@ async function seedAdminIfEmpty() {
   console.log(`Seeded admin user: ${username}`);
 }
 
-Promise.all([ensureSchema(), ensureReflectionSchema(), ensureLogsTable()])
+Promise.all([ensureSchema(), ensureReflectionSchema(), ensureLogsTable(), ensureSettingsTable()])
   .then(() => seedAdminIfEmpty())
   .then(() => {
     app.listen(port, () => {
