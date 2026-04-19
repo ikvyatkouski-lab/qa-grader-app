@@ -1929,60 +1929,6 @@ function homeCard(title, body, opts = {}) {
   </div>`;
 }
 
-function homeGreeting(firstName) {
-  const h = new Date().getHours();
-  const tod = h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
-  return `Good ${tod}, ${escapeHtml(firstName || 'there')}`;
-}
-
-function homeCatBars(categories) {
-  if (!categories || !categories.length) return '<span style="color:var(--mu);font-size:.8rem">No category data yet</span>';
-  return categories.map(c => {
-    const label = CAT_LABELS[c.category_id] || c.category_id;
-    const pct = c.avg_score != null ? Math.round(c.avg_score) : 0;
-    return `<div class="home-cat-bar-row">
-      <span class="home-cat-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
-      <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
-      <span class="bar-pct">${pct}%</span>
-    </div>`;
-  }).join('');
-}
-
-function homeSparklineHtml(canvasId) {
-  return `<div class="home-sparkline-wrap"><canvas id="${canvasId}" height="80"></canvas></div>`;
-}
-
-function homeInitSparkline(canvasId, trend, chartKey) {
-  const canvas = document.getElementById(canvasId);
-  if (!canvas) return;
-  if (charts[chartKey]) {
-    try { charts[chartKey].destroy(); } catch (e) {}
-  }
-  charts[chartKey] = new Chart(canvas, {
-    type: 'bar',
-    data: {
-      labels: trend.map(p => p.week),
-      datasets: [{
-        data: trend.map(p => p.score),
-        backgroundColor: trend.map(p => p.score == null ? 'rgba(99,102,241,0.2)' : 'rgba(99,102,241,0.7)'),
-        borderRadius: 4,
-        barPercentage: 0.65
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: {
-        callbacks: { label: ctx => ctx.raw != null ? ctx.raw + '%' : 'No data' }
-      }},
-      scales: {
-        x: { grid: { display: false }, ticks: { font: { size: 10 } } },
-        y: { display: false, min: 0, max: 100 }
-      }
-    }
-  });
-}
-
 async function renderHome() {
   const wrap = document.getElementById('home-wrap');
   if (!wrap) return;
@@ -2001,312 +1947,178 @@ async function renderHome() {
 
   const role = d.role;
   availableGraders = Array.isArray(d.available_graders) ? d.available_graders : availableGraders;
-  const firstName = (user?.name || user?.username || '').split(/[\s.]/)[0];
-  let html = '';
+  let cards = '';
 
-  // ── AGENT ──────────────────────────────────────────────────
   if (role === 'agent') {
     const scoreColor = d.week_score != null ? scol(d.week_score) : 'var(--mu)';
-    const hasNew = d.new_tickets_count > 0;
+    cards += homeCard('New Tickets',
+      `<div class="home-big" style="color:${d.new_tickets_count > 0 ? 'var(--ac)' : 'var(--mu)'}">${d.new_tickets_count}</div>
+       <div class="home-sub">unread graded tickets</div>
+       ${d.new_tickets_count > 0 ? `<button class="btn-p home-action-btn" id="home-go-new">View tickets</button>` : ''}`,
+      { accent: d.new_tickets_count > 0 });
 
-    html += `<div class="home-banner">
-      <div>
-        <h2>${homeGreeting(firstName)}</h2>
-        <p>${hasNew
-          ? `You have <strong style="color:var(--ac)">${d.new_tickets_count}</strong> new graded ticket${d.new_tickets_count !== 1 ? 's' : ''} to review`
-          : `You’re all caught up — no new graded tickets`}</p>
-      </div>
-      ${hasNew ? `<button class="home-banner-cta" id="home-go-new">View new tickets</button>` : ''}
-    </div>`;
+    cards += homeCard('My Score This Week',
+      `<div class="home-big" style="color:${scoreColor}">${d.week_score != null ? d.week_score + '%' : '—'}</div>
+       <div class="home-sub">${d.week_ticket_count} ticket${d.week_ticket_count !== 1 ? 's' : ''} graded ${scoreTrend(d.week_score, d.last_week_score)}</div>`);
 
-    html += `<div class="home-hero-strip">
-      <div class="home-hero-card">
-        <div class="home-big" style="color:${scoreColor}">${d.week_score != null ? d.week_score + '%' : '—'}</div>
-        <div class="home-sub">Week score</div>
-        <div class="home-sub" style="margin-top:3px">${d.week_ticket_count} ticket${d.week_ticket_count !== 1 ? 's' : ''} graded</div>
-      </div>
-      <div class="home-hero-card">
-        <div class="home-big">#${d.rank || '—'}</div>
-        <div class="home-sub">Team rank</div>
-        <div class="home-sub" style="margin-top:3px">of ${d.rank_total} agents</div>
-      </div>
-      <div class="home-hero-card">
-        <div class="home-big" style="color:${hasNew ? 'var(--ac)' : 'var(--mu)'}">${d.new_tickets_count}</div>
-        <div class="home-sub">New unread</div>
-        <div class="home-sub" style="margin-top:3px">graded tickets</div>
-      </div>
-      <div class="home-hero-card">
-        <div class="home-big">${d.last_week_score != null ? d.last_week_score + '%' : '—'}</div>
-        <div class="home-sub">Last week score</div>
-        <div class="home-sub" style="margin-top:3px">${scoreTrend(d.week_score, d.last_week_score)}</div>
-      </div>
-    </div>`;
+    if (d.worst_category) {
+      const catLabel = CAT_LABELS[d.worst_category.category_id] || d.worst_category.category_id;
+      cards += homeCard('Needs Attention',
+        `<div class="home-cat-label">${escapeHtml(catLabel)}</div>
+         <div class="home-big" style="color:var(--rd)">${d.worst_category.avg_score != null ? d.worst_category.avg_score + '%' : '—'}</div>
+         <div class="home-sub">lowest avg score this week</div>`);
+    }
 
-    const worstCatBars = d.worst_category ? homeCatBars([d.worst_category]) : '<span style="color:var(--mu);font-size:.8rem">No data yet</span>';
-
-    const notifRows = (notifications?.items || []).slice(0, 3).map(n => {
-      const scoreCol = n.total_percent != null ? scol(n.total_percent) : 'var(--mu)';
-      return `<div class="home-notif-inline">
-        <span class="ni-score" style="color:${scoreCol}">${n.total_percent != null ? n.total_percent + '%' : '—'}</span>
-        <span class="ni-text">${escapeHtml(n.subject || 'Ticket')} graded by ${escapeHtml(n.grader_name || '—')}</span>
-        <a href="#" class="home-open-ticket-link" data-id="${n.ticket_id}">Open</a>
-      </div>`;
-    }).join('') || '<span style="color:var(--mu);font-size:.8rem">No new notifications</span>';
-
-    const myName = (user?.name || user?.username || '').toLowerCase();
-    const lbRows = (d.leaderboard || []).map(lb => {
-      const isMe = !!(myName && lb.agent && lb.agent.toLowerCase().includes(myName));
-      return `<div class="home-leaderboard-row${isMe ? ' me' : ''}">
-        <span class="lb-rank">#${lb.rank}</span>
-        <span class="lb-name">${escapeHtml(lb.agent || '—')}</span>
-        <span class="lb-score" style="color:${lb.avg_score != null ? scol(lb.avg_score) : 'var(--mu)'}">${lb.avg_score != null ? lb.avg_score + '%' : '—'}</span>
-      </div>`;
-    }).join('') || '<span style="color:var(--mu);font-size:.8rem">No data yet</span>';
-
-    html += `<div class="home-two-col">
-      <div class="home-section">
-        <div class="home-section-title">Score trend (6 weeks)</div>
-        ${homeSparklineHtml('home-sparkline-agent')}
-        <div style="margin-top:14px">
-          <div class="home-section-title">Needs attention</div>
-          ${worstCatBars}
-        </div>
-      </div>
-      <div>
-        <div class="home-section" style="margin-bottom:12px">
-          <div class="home-section-title">Recent grades</div>
-          ${notifRows}
-        </div>
-        <div class="home-section">
-          <div class="home-section-title">Team leaderboard</div>
-          ${lbRows}
-        </div>
-      </div>
-    </div>`;
+    cards += homeCard('Team Rank',
+      `<div class="home-big">#${d.rank || '—'}</div>
+       <div class="home-sub">out of ${d.rank_total} agents this week</div>`);
   }
 
-  // ── QA GRADER ──────────────────────────────────────────────
   if (role === 'qa_grader') {
-    const hasQueue = d.pending_grading > 0;
-    const completed = d.grader_weekly_completed || 0;
-    const target = d.grader_weekly_target || 50;
-    const progressPct = Math.min(100, Math.round((completed / target) * 100));
+    cards += homeCard('To Grade',
+      `<div class="home-big" style="color:${d.pending_grading > 0 ? 'var(--am)' : 'var(--gr)'}">${d.pending_grading}</div>
+       <div class="home-sub">tickets assigned to you pending grading</div>
+       ${d.pending_grading > 0 ? `<button class="btn-p home-action-btn" id="home-go-grading">Go to queue</button>` : ''}`);
 
-    html += `<div class="home-banner">
-      <div>
-        <h2>${homeGreeting(firstName)}</h2>
-        <p>${hasQueue
-          ? `<strong style="color:var(--am)">${d.pending_grading}</strong> ticket${d.pending_grading !== 1 ? 's' : ''} waiting in your queue`
-          : `Your queue is empty — great work!`}</p>
-      </div>
-      ${hasQueue ? `<button class="home-banner-cta" id="home-go-grading">Go to queue</button>` : ''}
-    </div>`;
+    cards += homeCard('Team Score This Week',
+      `<div class="home-big">${d.week_team_score != null ? d.week_team_score + '%' : '—'}</div>
+       <div class="home-sub">${d.week_ticket_count} tickets graded</div>
+       <div class="home-vs">Last week: <strong>${d.last_week_team_score != null ? d.last_week_team_score + '%' : '—'}</strong> ${scoreTrend(d.week_team_score, d.last_week_team_score)}</div>`);
 
-    html += `<div class="home-hero-strip">
-      <div class="home-hero-card">
-        <div class="home-big" style="color:${hasQueue ? 'var(--am)' : 'var(--gr)'}">${d.pending_grading}</div>
-        <div class="home-sub">In queue</div>
-        <div class="home-sub" style="margin-top:3px">tickets to grade</div>
-      </div>
-      <div class="home-hero-card">
-        <div class="home-big">${d.week_team_score != null ? d.week_team_score + '%' : '—'}</div>
-        <div class="home-sub">Team score this week</div>
-        <div class="home-sub" style="margin-top:3px">${scoreTrend(d.week_team_score, d.last_week_team_score)}</div>
-      </div>
-      <div class="home-hero-card">
-        <div class="home-big">${completed}</div>
-        <div class="home-sub">Graded this week</div>
-        <div class="home-progress-bar" style="margin-top:6px"><div class="bar-fill" style="width:${progressPct}%"></div></div>
-        <div class="home-sub" style="margin-top:4px">${completed} / ${target} target</div>
-      </div>
-      <div class="home-hero-card">
-        <div class="home-big">${d.last_week_team_score != null ? d.last_week_team_score + '%' : '—'}</div>
-        <div class="home-sub">Last week team</div>
-      </div>
-    </div>`;
+    if (d.worst_category) {
+      cards += homeCard('Worst Category',
+        `<div class="home-cat-label">${escapeHtml(CAT_LABELS[d.worst_category.category_id] || d.worst_category.category_id)}</div>
+         <div class="home-big" style="color:var(--rd)">${d.worst_category.avg_score != null ? d.worst_category.avg_score + '%' : '—'}</div>
+         <div class="home-vs">Last week: <strong>${d.worst_category_last_week != null ? d.worst_category_last_week + '%' : '—'}</strong> ${scoreTrend(d.worst_category.avg_score, d.worst_category_last_week)}</div>`);
+    }
 
-    const catBarsHtml = [d.worst_category, d.best_category].filter(Boolean).length
-      ? homeCatBars([d.worst_category, d.best_category].filter(Boolean))
-      : '<span style="color:var(--mu);font-size:.8rem">No category data yet</span>';
+    if (d.best_category) {
+      cards += homeCard('Best Category',
+        `<div class="home-cat-label">${escapeHtml(CAT_LABELS[d.best_category.category_id] || d.best_category.category_id)}</div>
+         <div class="home-big" style="color:var(--gr)">${d.best_category.avg_score != null ? d.best_category.avg_score + '%' : '—'}</div>
+         <div class="home-vs">Last week: <strong>${d.best_category_last_week != null ? d.best_category_last_week + '%' : '—'}</strong> ${scoreTrend(d.best_category.avg_score, d.best_category_last_week)}</div>`);
+    }
 
-    const queueRows = (d.to_grade || []).slice(0, 5).map(t =>
-      `<div class="home-list-row" data-id="${t.id}" style="display:flex;gap:8px;padding:7px 4px;cursor:pointer;border-bottom:1px solid var(--bd);font-size:.8rem;align-items:center">
-        <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(t.subject || String(t.id))}</div>
-        <div style="color:var(--mu);flex-shrink:0;font-size:.73rem">${escapeHtml(t.agent || '—')}</div>
-        <span style="color:var(--am);font-weight:600;flex-shrink:0;font-size:.73rem">Pending</span>
-      </div>`
-    ).join('') || '<div style="color:var(--mu);font-size:.8rem;padding:6px 0">Queue is empty</div>';
+    if (d.top_inbox) {
+      cards += homeCard('Busiest Inbox',
+        `<div class="home-cat-label">${escapeHtml(d.top_inbox.inbox || '—')}</div>
+         <div class="home-big">${d.top_inbox.cnt}</div>
+         <div class="home-vs">Last week: <strong>${d.top_inbox_last_week_count}</strong> ${scoreTrend(d.top_inbox.cnt, d.top_inbox_last_week_count)}</div>`);
+    }
 
-    const recentRows = (d.recently_graded || []).slice(0, 3).map(t =>
-      `<div style="display:flex;gap:8px;padding:5px 4px;border-bottom:1px solid var(--bd);font-size:.8rem;align-items:center">
-        <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(t.subject || String(t.id))}</div>
-        <span style="font-weight:700;color:${t.total_percent != null ? scol(t.total_percent) : 'var(--mu)'};flex-shrink:0">${t.total_percent != null ? t.total_percent + '%' : '—'}</span>
-      </div>`
-    ).join('') || '<div style="color:var(--mu);font-size:.8rem;padding:6px 0">No recent grades</div>';
-
-    const notifRows = (notifications?.items || []).slice(0, 2).map(n =>
-      `<div class="home-notif-inline">
-        <span class="ni-text">${escapeHtml(n.subject || 'Ticket')}</span>
-      </div>`
-    ).join('') || '<span style="color:var(--mu);font-size:.8rem">No notifications</span>';
-
-    html += `<div class="home-two-col">
-      <div class="home-section">
-        <div class="home-section-title">Category breakdown</div>
-        ${catBarsHtml}
-        <div class="home-section-title" style="margin-top:14px">Team score trend (6 weeks)</div>
-        ${homeSparklineHtml('home-sparkline-grader')}
-      </div>
-      <div>
-        <div class="home-section" style="margin-bottom:12px">
-          <div class="home-section-title">My queue <span style="color:var(--am);margin-left:4px">${(d.to_grade || []).length}</span></div>
-          ${queueRows}
-          ${(d.to_grade || []).length > 5 ? `<div style="text-align:center;margin-top:8px"><button class="btn-p home-action-btn" id="home-go-grading2">View all ${d.pending_grading}</button></div>` : ''}
-        </div>
-        <div class="home-section" style="margin-bottom:12px">
-          <div class="home-section-title">Recently graded by me</div>
-          ${recentRows}
-        </div>
-        <div class="home-section">
-          <div class="home-section-title">Notifications</div>
-          ${notifRows}
-        </div>
-      </div>
-    </div>`;
+    if (d.best_agent) {
+      cards += homeCard('Best Agent This Week',
+        `<div class="home-cat-label">${escapeHtml(d.best_agent.agent || '—')}</div>
+         <div class="home-big" style="color:var(--gr)">${d.best_agent.avg_score != null ? d.best_agent.avg_score + '%' : '—'}</div>
+         <div class="home-vs">Last week: <strong>${d.best_agent_last_week?.agent ? escapeHtml(d.best_agent_last_week.agent) + ' ' + d.best_agent_last_week.avg_score + '%' : '—'}</strong></div>`);
+    }
   }
 
-  // ── CS LEADER / ADMIN ─────────────────────────────────────
   if (['cs_leader', 'admin'].includes(role)) {
-    const needReview = (d.review_tickets || []).length;
+    cards += homeCard('Team Score This Week',
+      `<div class="home-big">${d.week_team_score != null ? d.week_team_score + '%' : '—'}</div>
+       <div class="home-sub">${d.week_ticket_count} tickets graded</div>
+       <div class="home-vs">Last week: <strong>${d.last_week_team_score != null ? d.last_week_team_score + '%' : '—'}</strong> ${scoreTrend(d.week_team_score, d.last_week_team_score)}</div>`);
 
-    html += `<div class="home-banner">
-      <div>
-        <h2>${homeGreeting(firstName)}</h2>
-        <p>Team score <strong>${d.week_team_score != null ? d.week_team_score + '%' : '—'}</strong>
-           · ${d.week_ticket_count} graded this week
-           · ${needReview > 0
-              ? `<strong style="color:var(--am)">${needReview} need${needReview === 1 ? 's' : ''} review</strong>`
-              : 'no tickets need review'}</p>
-      </div>
-      ${needReview > 0 ? `<button class="home-banner-cta" id="home-go-review-panel">Review queue ↓</button>` : ''}
-    </div>`;
+    if (d.worst_category) {
+      cards += homeCard('Worst Category',
+        `<div class="home-cat-label">${escapeHtml(CAT_LABELS[d.worst_category.category_id] || d.worst_category.category_id)}</div>
+         <div class="home-big" style="color:var(--rd)">${d.worst_category.avg_score != null ? d.worst_category.avg_score + '%' : '—'}</div>
+         <div class="home-vs">Last week: <strong>${d.worst_category_last_week != null ? d.worst_category_last_week + '%' : '—'}</strong> ${scoreTrend(d.worst_category.avg_score, d.worst_category_last_week)}</div>`);
+    }
 
-    html += `<div class="home-hero-strip">
-      <div class="home-hero-card">
-        <div class="home-big">${d.week_team_score != null ? d.week_team_score + '%' : '—'}</div>
-        <div class="home-sub">Team score this week</div>
-        <div class="home-sub" style="margin-top:3px">${scoreTrend(d.week_team_score, d.last_week_team_score)}</div>
-      </div>
-      <div class="home-hero-card">
-        <div class="home-big">${d.week_ticket_count}</div>
-        <div class="home-sub">Graded this week</div>
-      </div>
-      <div class="home-hero-card">
-        <div class="home-big" style="color:${needReview > 0 ? 'var(--am)' : 'var(--gr)'}">${needReview}</div>
-        <div class="home-sub">Need review</div>
-        <div class="home-sub" style="margin-top:3px">below ${d.review_threshold || 60}% threshold</div>
-      </div>
-      <div class="home-hero-card">
-        <div class="home-big">${d.active_sessions}</div>
-        <div class="home-sub">Active sessions</div>
-        <div class="home-sub" style="margin-top:3px">${d.user_count} total users</div>
-      </div>
-    </div>`;
+    if (d.best_category) {
+      cards += homeCard('Best Category',
+        `<div class="home-cat-label">${escapeHtml(CAT_LABELS[d.best_category.category_id] || d.best_category.category_id)}</div>
+         <div class="home-big" style="color:var(--gr)">${d.best_category.avg_score != null ? d.best_category.avg_score + '%' : '—'}</div>
+         <div class="home-vs">Last week: <strong>${d.best_category_last_week != null ? d.best_category_last_week + '%' : '—'}</strong> ${scoreTrend(d.best_category.avg_score, d.best_category_last_week)}</div>`);
+    }
 
-    const catBarsHtml = [d.worst_category, d.best_category].filter(Boolean).length
-      ? homeCatBars([d.worst_category, d.best_category].filter(Boolean))
-      : '<span style="color:var(--mu);font-size:.8rem">No category data yet</span>';
+    if (d.top_inbox) {
+      cards += homeCard('Busiest Inbox',
+        `<div class="home-cat-label">${escapeHtml(d.top_inbox.inbox || '—')}</div>
+         <div class="home-big">${d.top_inbox.cnt}</div>
+         <div class="home-vs">Last week: <strong>${d.top_inbox_last_week_count}</strong> ${scoreTrend(d.top_inbox.cnt, d.top_inbox_last_week_count)}</div>`);
+    }
 
-    const lbRows = (d.leaderboard || []).map(lb =>
-      `<div class="home-leaderboard-row">
-        <span class="lb-rank">#${lb.rank}</span>
-        <span class="lb-name">${escapeHtml(lb.agent || '—')}</span>
-        <span class="lb-score" style="color:${lb.avg_score != null ? scol(lb.avg_score) : 'var(--mu)'}">${lb.avg_score != null ? lb.avg_score + '%' : '—'}</span>
+    if (d.best_agent) {
+      cards += homeCard('Best Agent This Week',
+        `<div class="home-cat-label">${escapeHtml(d.best_agent.agent || '—')}</div>
+         <div class="home-big" style="color:var(--gr)">${d.best_agent.avg_score != null ? d.best_agent.avg_score + '%' : '—'}</div>
+         <div class="home-vs">Last week: <strong>${d.best_agent_last_week?.agent ? escapeHtml(d.best_agent_last_week.agent) + ' ' + d.best_agent_last_week.avg_score + '%' : '—'}</strong></div>`);
+    }
+
+    cards += homeCard('Users',
+      `<div class="home-big">${d.user_count}</div>
+       <div class="home-sub">${d.active_sessions} active session${d.active_sessions !== 1 ? 's' : ''}</div>`);
+
+    if (role === 'cs_leader') {
+      const newReviewCount = TICKETS.length
+        ? reviewAssignmentTickets().length
+        : (Array.isArray(d.unassigned_low_score) ? d.unassigned_low_score.length : 0);
+      cards += homeCard('New Review Tickets',
+        `<div class="home-big" style="color:${newReviewCount > 0 ? 'var(--am)' : 'var(--mu)'}">${newReviewCount}</div>
+         <div class="home-sub">tickets in review queue</div>
+         <button class="btn-p home-action-btn" id="home-go-review">Open</button>`,
+        { accent: newReviewCount > 0 });
+    }
+
+    // Recent logs card
+    const logRows = (d.recent_logs || []).map(l =>
+      `<div class="home-log-row">
+        <span class="home-log-user">${escapeHtml(l.username || '—')}</span>
+        <span class="home-log-action">${escapeHtml(l.action)}</span>
+        <span class="home-log-time">${new Date(l.created_at).toLocaleString()}</span>
       </div>`
-    ).join('') || '<span style="color:var(--mu);font-size:.8rem">No data yet</span>';
-
-    const activityRows = (d.recent_logs || []).slice(0, 3).map(l =>
-      `<div style="padding:5px 0;border-bottom:1px solid var(--bd);font-size:.78rem;display:flex;gap:6px;align-items:baseline">
-        <span style="color:var(--tx);font-weight:600">${escapeHtml(l.username || '—')}</span>
-        <span style="color:var(--mu);flex:1">${escapeHtml(l.action)}</span>
-        <span style="color:var(--mu);font-size:.7rem;flex-shrink:0">${new Date(l.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>
-      </div>`
-    ).join('') || '<div style="color:var(--mu);font-size:.8rem;padding:4px 0">No recent activity</div>';
-
-    const notifRows = (notifications?.items || []).slice(0, 1).map(n =>
-      `<div class="home-notif-inline">
-        <span class="ni-text">${escapeHtml(n.subject || 'Ticket')}</span>
-      </div>`
-    ).join('') || '<span style="color:var(--mu);font-size:.8rem">No notifications</span>';
-
-    html += `<div class="home-two-col">
-      <div class="home-section">
-        <div class="home-section-title">Category breakdown</div>
-        ${catBarsHtml}
-        <div class="home-section-title" style="margin-top:14px">Team score trend (6 weeks)</div>
-        ${homeSparklineHtml('home-sparkline-leader')}
-      </div>
-      <div>
-        <div class="home-section" style="margin-bottom:12px">
-          <div class="home-section-title">Agent leaderboard</div>
-          ${lbRows}
-        </div>
-        <div class="home-section" style="margin-bottom:12px">
-          <div class="home-section-title">Recent activity</div>
-          ${activityRows}
-        </div>
-        <div class="home-section">
-          <div class="home-section-title">Notifications</div>
-          ${notifRows}
-        </div>
-      </div>
-    </div>`;
-
-    const graderOptions = (availableGraders || []).map(g =>
-      `<option value="${escapeHtml(g.username)}">${escapeHtml(g.username)}</option>`
     ).join('');
+    cards += homeCard('Recent Activity', logRows || '<span style="color:var(--mu)">No activity yet</span>', { wide: true });
+  }
 
-    const reviewRows = (d.review_tickets || []).map(t =>
-      `<div class="home-review-ticket-row" data-ticket-id="${t.id}">
-        <div class="rt-info">
-          <div class="rt-subject">#${t.id} — ${escapeHtml(t.subject || '—')}</div>
-          <div class="rt-meta">Agent: ${escapeHtml(t.agent || '—')}</div>
-        </div>
-        <span class="rt-score">${t.bot_total_percent != null ? t.bot_total_percent + '%' : '—'}</span>
-        <select class="grader-select">
-          <option value="">Assign to…</option>
-          ${graderOptions}
-        </select>
-        <button class="assign-btn">Assign</button>
-      </div>`
-    ).join('') || '<div style="color:var(--mu);font-size:.82rem;padding:4px 0">No tickets below the threshold — great job!</div>';
+  let listsHtml = '';
+  if (role === 'qa_grader') {
+    const toGrade = d.to_grade || [];
+    const recentlyGraded = d.recently_graded || [];
 
-    html += `<div class="home-review-panel" id="home-review-panel">
-      <div class="home-section-title">Review threshold + assignment</div>
-      <div class="threshold-row">
-        <label>Flag tickets below</label>
-        <input type="number" id="review-threshold-input" min="1" max="100" value="${d.review_threshold || 60}">
-        <label>% bot score</label>
-        <button id="review-threshold-save">Save</button>
-        <span id="review-threshold-msg" style="font-size:.78rem;color:var(--mu)"></span>
+    const toGradeRows = toGrade.length
+      ? toGrade.map(t => `<tr class="home-list-row" data-id="${t.id}">
+          <td>${escapeHtml(t.subject || t.id)}</td>
+          <td>${escapeHtml(t.agent || '—')}</td>
+          <td>${escapeHtml(t.inbox || '—')}</td>
+          <td>${t.ticket_date ? t.ticket_date.slice(0,10) : '—'}</td>
+          <td><span style="color:var(--am);font-weight:600">Pending</span></td>
+        </tr>`).join('')
+      : `<tr><td colspan="5" style="color:var(--mu);padding:12px">No tickets in queue</td></tr>`;
+
+    const gradedRows = recentlyGraded.length
+      ? recentlyGraded.map(t => `<tr class="home-list-row" data-id="${t.id}">
+          <td>${escapeHtml(t.subject || t.id)}</td>
+          <td>${escapeHtml(t.agent || '—')}</td>
+          <td>${escapeHtml(t.inbox || '—')}</td>
+          <td>${t.ticket_date ? t.ticket_date.slice(0,10) : '—'}</td>
+          <td style="color:var(--gr);font-weight:600">${t.total_percent != null ? t.total_percent + '%' : '—'}</td>
+        </tr>`).join('')
+      : `<tr><td colspan="5" style="color:var(--mu);padding:12px">No graded tickets yet</td></tr>`;
+
+    listsHtml = `
+      <div class="home-list-section">
+        <div class="home-list-title">My Queue <span class="home-list-count">${toGrade.length}</span></div>
+        <table class="home-list-table">
+          <thead><tr><th>Subject</th><th>Agent</th><th>Inbox</th><th>Date</th><th>Status</th></tr></thead>
+          <tbody>${toGradeRows}</tbody>
+        </table>
       </div>
-      <div class="home-section-title" style="margin-bottom:8px">Tickets for review <span style="background:rgba(245,158,11,.15);color:var(--am);border-radius:4px;padding:1px 6px;margin-left:4px;font-size:.75rem">${needReview}</span></div>
-      <div id="review-tickets-list">${reviewRows}</div>
-    </div>`;
+      <div class="home-list-section">
+        <div class="home-list-title">Recently Graded by Me <span class="home-list-count">${recentlyGraded.length}</span></div>
+        <table class="home-list-table">
+          <thead><tr><th>Subject</th><th>Agent</th><th>Inbox</th><th>Date</th><th>Score</th></tr></thead>
+          <tbody>${gradedRows}</tbody>
+        </table>
+      </div>`;
   }
 
-  wrap.innerHTML = html;
+  wrap.innerHTML = `<div class="home-grid">${cards}</div>${listsHtml}`;
 
-  if (role === 'agent' && d.score_trend?.length) {
-    homeInitSparkline('home-sparkline-agent', d.score_trend, 'homeSparklineAgent');
-  }
-  if (role === 'qa_grader' && d.score_trend?.length) {
-    homeInitSparkline('home-sparkline-grader', d.score_trend, 'homeSparklineGrader');
-  }
-  if (['cs_leader', 'admin'].includes(role) && d.score_trend?.length) {
-    homeInitSparkline('home-sparkline-leader', d.score_trend, 'homeSparklineLeader');
-  }
-
+  // Click on ticket row goes to that ticket
   wrap.querySelectorAll('.home-list-row[data-id]').forEach(row => {
     row.addEventListener('click', () => {
       const tid = parseInt(row.dataset.id);
@@ -2314,79 +2126,11 @@ async function renderHome() {
       if (ticket) pickTicket(ticket);
     });
   });
-  wrap.querySelectorAll('.home-open-ticket-link').forEach(a => {
-    a.addEventListener('click', e => {
-      e.preventDefault();
-      const tid = parseInt(a.dataset.id);
-      const ticket = TICKETS.find(t => t.id === tid);
-      if (ticket) pickTicket(ticket);
-    });
-  });
+
+  // Wire up buttons
   document.getElementById('home-go-new')?.addEventListener('click', () => switchTab('n'));
   document.getElementById('home-go-grading')?.addEventListener('click', () => switchTab('g'));
-  document.getElementById('home-go-grading2')?.addEventListener('click', () => switchTab('g'));
-
-  document.getElementById('review-threshold-save')?.addEventListener('click', async () => {
-    const input = document.getElementById('review-threshold-input');
-    const msg = document.getElementById('review-threshold-msg');
-    const val = parseInt(input?.value);
-    if (!val || val < 1 || val > 100) {
-      if (msg) msg.textContent = 'Enter 1–100';
-      return;
-    }
-    if (msg) msg.textContent = 'Saving…';
-    try {
-      const r = await fetch(`${API_BASE}/api/settings/review-threshold`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ threshold: val })
-      });
-      if (!r.ok) throw new Error(await r.text());
-      if (msg) msg.textContent = '✓ Saved';
-      setTimeout(() => {
-        if (msg) msg.textContent = '';
-        renderHome();
-      }, 1200);
-    } catch (e) {
-      if (msg) msg.textContent = 'Error: ' + e.message;
-    }
-  });
-
-  document.getElementById('home-go-review-panel')?.addEventListener('click', () => {
-    document.getElementById('home-review-panel')?.scrollIntoView({ behavior: 'smooth' });
-  });
-
-  wrap.querySelectorAll('#review-tickets-list .assign-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const row = btn.closest('.home-review-ticket-row');
-      if (!row) return;
-      const ticketId = row.dataset.ticketId;
-      const grader = row.querySelector('.grader-select')?.value;
-      if (!grader) {
-        alert('Please select a grader first');
-        return;
-      }
-      btn.disabled = true;
-      btn.textContent = '…';
-      try {
-        const r = await fetch(`${API_BASE}/api/tickets/${ticketId}/assign`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ grader })
-        });
-        if (!r.ok) throw new Error(await r.text());
-        row.style.transition = 'opacity .3s';
-        row.style.opacity = '0';
-        setTimeout(() => row.remove(), 320);
-      } catch (e) {
-        btn.disabled = false;
-        btn.textContent = 'Assign';
-        alert('Assignment failed: ' + e.message);
-      }
-    });
-  });
+  document.getElementById('home-go-review')?.addEventListener('click', () => switchTab('n'));
 }
 
 async function renderLogs() {

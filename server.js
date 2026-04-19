@@ -1094,7 +1094,7 @@ app.get('/api/home', requireAuth, async (req, res) => {
     if (role === 'agent') {
       const agentKey = currentAgentKey(u);
 
-      const [newCount, weekScore, lastWeekScore, worstCat, teamRank, scoreTrendRows, leaderboardRows] = await Promise.all([
+      const [newCount, weekScore, lastWeekScore, worstCat, teamRank] = await Promise.all([
         // New unread tickets
         pool.query(`
           SELECT COUNT(*) AS cnt FROM tickets t
@@ -1140,38 +1140,7 @@ app.get('/api/home', requireAuth, async (req, res) => {
           )
           SELECT COUNT(*) AS total,
             (SELECT COUNT(*)+1 FROM scores WHERE avg > (SELECT avg FROM scores WHERE akey=$3)) AS rank
-          FROM scores`, [thisWeekFrom, thisWeekTo, agentKey]),
-
-        pool.query(`
-          WITH weeks AS (
-            SELECT generate_series(
-              date_trunc('week', NOW() AT TIME ZONE 'UTC') - INTERVAL '5 weeks',
-              date_trunc('week', NOW() AT TIME ZONE 'UTC'),
-              INTERVAL '1 week'
-            ) AS ws
-          )
-          SELECT TO_CHAR(w.ws, 'Mon DD') AS week,
-                 COALESCE(ROUND(AVG(g.total_percent)), NULL) AS score
-          FROM weeks w
-          LEFT JOIN tickets t ON t.ticket_date::date >= w.ws::date
-                             AND t.ticket_date::date < (w.ws + INTERVAL '1 week')::date
-                             AND t.deleted_at IS NULL
-          LEFT JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
-                             AND g.submitted = TRUE
-                             AND ${AGENT_KEY_SQL} = $1
-          GROUP BY w.ws
-          ORDER BY w.ws`, [agentKey]),
-
-        pool.query(`
-          SELECT MIN(${AGENT_LABEL_SQL}) AS agent,
-                 ROUND(AVG(g.total_percent)) AS avg_score,
-                 RANK() OVER (ORDER BY ROUND(AVG(g.total_percent)) DESC NULLS LAST) AS rank
-          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
-          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
-            AND t.ticket_date >= $1 AND t.ticket_date < $2
-          GROUP BY ${AGENT_KEY_SQL}
-          ORDER BY avg_score DESC NULLS LAST
-          LIMIT 5`, [thisWeekFrom, thisWeekTo])
+          FROM scores`, [thisWeekFrom, thisWeekTo, agentKey])
       ]);
 
       return res.json({
@@ -1182,20 +1151,14 @@ app.get('/api/home', requireAuth, async (req, res) => {
         last_week_score: lastWeekScore.rows[0]?.avg_score ?? null,
         worst_category: worstCat.rows[0] || null,
         rank: parseInt(teamRank.rows[0]?.rank || 0),
-        rank_total: parseInt(teamRank.rows[0]?.total || 0),
-        score_trend: scoreTrendRows.rows.map(r => ({ week: r.week, score: r.score !== null ? parseInt(r.score) : null })),
-        leaderboard: leaderboardRows.rows.map(r => ({
-          agent: r.agent,
-          avg_score: r.avg_score !== null ? parseInt(r.avg_score) : null,
-          rank: parseInt(r.rank)
-        }))
+        rank_total: parseInt(teamRank.rows[0]?.total || 0)
       });
     }
 
     if (role === 'qa_grader') {
       const graderKeys = currentGraderKeys(u);
 
-      const [pending, weekTeam, lastWeekTeam, worstCat, bestCat, topInbox, bestAgent, bestAgentLast, toGradeList, gradedList, scoreTrendRows, leaderboardRows, weeklyCompleted] = await Promise.all([
+      const [pending, weekTeam, lastWeekTeam, worstCat, bestCat, topInbox, bestAgent, bestAgentLast, toGradeList, gradedList] = await Promise.all([
         // Tickets pending grading assigned to this grader
         pool.query(`
           SELECT COUNT(*) AS cnt FROM tickets t
@@ -1289,47 +1252,7 @@ app.get('/api/home', requireAuth, async (req, res) => {
               OR g.grader_user_id = $2
             )
           ORDER BY g.submitted_at DESC
-          LIMIT 50`, [graderKeys, u.id]),
-
-        pool.query(`
-          WITH weeks AS (
-            SELECT generate_series(
-              date_trunc('week', NOW() AT TIME ZONE 'UTC') - INTERVAL '5 weeks',
-              date_trunc('week', NOW() AT TIME ZONE 'UTC'),
-              INTERVAL '1 week'
-            ) AS ws
-          )
-          SELECT TO_CHAR(w.ws, 'Mon DD') AS week,
-                 COALESCE(ROUND(AVG(g.total_percent)), NULL) AS score
-          FROM weeks w
-          LEFT JOIN tickets t ON t.ticket_date::date >= w.ws::date
-                             AND t.ticket_date::date < (w.ws + INTERVAL '1 week')::date
-                             AND t.deleted_at IS NULL
-          LEFT JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE AND g.submitted = TRUE
-          GROUP BY w.ws
-          ORDER BY w.ws`),
-
-        pool.query(`
-          SELECT MIN(${AGENT_LABEL_SQL}) AS agent,
-                 ROUND(AVG(g.total_percent)) AS avg_score,
-                 RANK() OVER (ORDER BY ROUND(AVG(g.total_percent)) DESC NULLS LAST) AS rank
-          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
-          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
-            AND t.ticket_date >= $1 AND t.ticket_date < $2
-          GROUP BY ${AGENT_KEY_SQL}
-          ORDER BY avg_score DESC NULLS LAST
-          LIMIT 5`, [thisWeekFrom, thisWeekTo]),
-
-        pool.query(`
-          SELECT COUNT(*) AS cnt
-          FROM grades g
-          JOIN tickets t ON t.id = g.ticket_id AND t.deleted_at IS NULL
-          WHERE g.is_deleted = FALSE AND g.submitted = TRUE
-            AND g.submitted_at >= $1 AND g.submitted_at < $2
-            AND (
-              LOWER(BTRIM(COALESCE(g.grader_name, ''))) = ANY($3::text[])
-              OR g.grader_user_id = $4
-            )`, [thisWeekFrom, thisWeekTo, graderKeys, u.id])
+          LIMIT 50`, [graderKeys, u.id])
       ]);
 
       // Last week top inbox for comparison
@@ -1372,20 +1295,12 @@ app.get('/api/home', requireAuth, async (req, res) => {
         best_agent: bestAgent.rows[0] || null,
         best_agent_last_week: bestAgentLast.rows[0] || null,
         to_grade: toGradeList.rows,
-        recently_graded: gradedList.rows,
-        score_trend: scoreTrendRows.rows.map(r => ({ week: r.week, score: r.score !== null ? parseInt(r.score) : null })),
-        leaderboard: leaderboardRows.rows.map(r => ({
-          agent: r.agent,
-          avg_score: r.avg_score !== null ? parseInt(r.avg_score) : null,
-          rank: parseInt(r.rank)
-        })),
-        grader_weekly_completed: parseInt(weeklyCompleted.rows[0]?.cnt || 0),
-        grader_weekly_target: 50
+        recently_graded: gradedList.rows
       });
     }
 
     if (['cs_leader', 'admin'].includes(role)) {
-      const [userCount, activeSessionCount, recentLogs, weekTeam, lastWeekTeam, worstCat, bestCat, topInbox, unassigned, bestAgent, bestAgentLast, scoreTrendRows, leaderboardRows, thresholdRow] = await Promise.all([
+      const [userCount, activeSessionCount, recentLogs, weekTeam, lastWeekTeam, worstCat, bestCat, topInbox, unassigned, bestAgent, bestAgentLast] = await Promise.all([
         pool.query(`SELECT COUNT(*) AS cnt FROM users WHERE is_active = TRUE`),
         pool.query(`SELECT COUNT(*) AS cnt FROM session`),
         pool.query(`SELECT username, role, action, details, created_at FROM user_logs ORDER BY created_at DESC LIMIT 5`),
@@ -1460,38 +1375,7 @@ app.get('/api/home', requireAuth, async (req, res) => {
           WHERE t.deleted_at IS NULL AND g.submitted = TRUE
             AND t.ticket_date >= $1 AND t.ticket_date < $2
           GROUP BY ${AGENT_KEY_SQL} HAVING COUNT(*) >= 1
-          ORDER BY avg_score DESC NULLS LAST LIMIT 1`, [lastWeekFrom, lastWeekTo]),
-
-        pool.query(`
-          WITH weeks AS (
-            SELECT generate_series(
-              date_trunc('week', NOW() AT TIME ZONE 'UTC') - INTERVAL '5 weeks',
-              date_trunc('week', NOW() AT TIME ZONE 'UTC'),
-              INTERVAL '1 week'
-            ) AS ws
-          )
-          SELECT TO_CHAR(w.ws, 'Mon DD') AS week,
-                 COALESCE(ROUND(AVG(g.total_percent)), NULL) AS score
-          FROM weeks w
-          LEFT JOIN tickets t ON t.ticket_date::date >= w.ws::date
-                             AND t.ticket_date::date < (w.ws + INTERVAL '1 week')::date
-                             AND t.deleted_at IS NULL
-          LEFT JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE AND g.submitted = TRUE
-          GROUP BY w.ws
-          ORDER BY w.ws`),
-
-        pool.query(`
-          SELECT MIN(${AGENT_LABEL_SQL}) AS agent,
-                 ROUND(AVG(g.total_percent)) AS avg_score,
-                 RANK() OVER (ORDER BY ROUND(AVG(g.total_percent)) DESC NULLS LAST) AS rank
-          FROM tickets t JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
-          WHERE t.deleted_at IS NULL AND g.submitted = TRUE
-            AND t.ticket_date >= $1 AND t.ticket_date < $2
-          GROUP BY ${AGENT_KEY_SQL}
-          ORDER BY avg_score DESC NULLS LAST
-          LIMIT 5`, [thisWeekFrom, thisWeekTo]),
-
-        pool.query(`SELECT value FROM settings WHERE key = 'review_threshold'`)
+          ORDER BY avg_score DESC NULLS LAST LIMIT 1`, [lastWeekFrom, lastWeekTo])
       ]);
 
       const lastTopInbox = topInbox.rows[0]?.inbox ? await pool.query(`
@@ -1519,18 +1403,6 @@ app.get('/api/home', requireAuth, async (req, res) => {
 
       // Available graders for assignment
       const graders = await pool.query(`SELECT id, username, email FROM users WHERE role = 'qa_grader' AND is_active = TRUE ORDER BY username`);
-      const threshold = parseInt(thresholdRow.rows[0]?.value ?? 60);
-      const reviewTicketsRes = await pool.query(`
-        SELECT t.id, t.subject, t.agent, t.inbox, t.ticket_date,
-               g.total_percent AS bot_total_percent
-        FROM tickets t
-        LEFT JOIN grades g ON g.ticket_id = t.id AND g.is_deleted = FALSE
-        WHERE t.deleted_at IS NULL
-          AND (t.assigned_grader IS NULL OR BTRIM(t.assigned_grader) = '')
-          AND (g.id IS NULL OR g.submitted = FALSE)
-          AND (g.total_percent IS NULL OR g.total_percent < $1)
-        ORDER BY g.total_percent ASC NULLS FIRST, t.ticket_date DESC
-        LIMIT 50`, [threshold]);
 
       return res.json({
         role,
@@ -1549,15 +1421,7 @@ app.get('/api/home', requireAuth, async (req, res) => {
         unassigned_low_score: unassigned.rows,
         available_graders: graders.rows,
         best_agent: bestAgent.rows[0] || null,
-        best_agent_last_week: bestAgentLast.rows[0] || null,
-        score_trend: scoreTrendRows.rows.map(r => ({ week: r.week, score: r.score !== null ? parseInt(r.score) : null })),
-        leaderboard: leaderboardRows.rows.map(r => ({
-          agent: r.agent,
-          avg_score: r.avg_score !== null ? parseInt(r.avg_score) : null,
-          rank: parseInt(r.rank)
-        })),
-        review_threshold: threshold,
-        review_tickets: reviewTicketsRes.rows
+        best_agent_last_week: bestAgentLast.rows[0] || null
       });
     }
 
@@ -1981,28 +1845,6 @@ app.get('/api/notifications', requireAuth, async (req, res) => {
         reflection_text: row.reflection_text
       }))
     });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/settings/review-threshold', requireAuth, async (req, res) => {
-  try {
-    const { role } = req.session.user;
-    if (!['cs_leader', 'admin'].includes(role)) return res.status(403).json({ error: 'Forbidden' });
-    const { threshold } = req.body;
-    const val = parseInt(threshold);
-    if (!Number.isInteger(val) || val < 1 || val > 100) {
-      return res.status(400).json({ error: 'threshold must be 1–100' });
-    }
-    await pool.query(
-      `INSERT INTO settings (key, value) VALUES ('review_threshold', $1)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-      [String(val)]
-    );
-    logAction(req, 'review_threshold_updated', { threshold: val });
-    res.json({ threshold: val });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -2569,33 +2411,6 @@ app.post('/api/tickets/assign', requireUserMgmt, async (req, res) => {
     );
     logAction(req, 'tickets_assigned', { count: ticket_ids.length, grader: grader_username });
     res.json({ ok: true, count: ticket_ids.length });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/tickets/:id/assign', requireAuth, async (req, res) => {
-  try {
-    const { role } = req.session.user;
-    if (!['cs_leader', 'admin'].includes(role)) return res.status(403).json({ error: 'Forbidden' });
-    const ticketId = parseInt(req.params.id);
-    if (!ticketId) return res.status(400).json({ error: 'invalid ticket id' });
-    const { grader } = req.body;
-    if (!grader || typeof grader !== 'string') return res.status(400).json({ error: 'grader required' });
-
-    const graderCheck = await pool.query(
-      `SELECT id FROM users WHERE username = $1 AND role = 'qa_grader' AND is_active = TRUE`,
-      [grader]
-    );
-    if (!graderCheck.rows.length) return res.status(400).json({ error: 'Unknown or inactive grader' });
-
-    await pool.query(
-      `UPDATE tickets SET assigned_grader = $1 WHERE id = $2 AND deleted_at IS NULL`,
-      [grader, ticketId]
-    );
-    logAction(req, 'ticket_assigned', { ticket_id: ticketId, grader });
-    res.json({ ok: true });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
